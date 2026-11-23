@@ -299,11 +299,14 @@ The link provided is unique to you. Please do not share it. The sender keeps the
 
 
 @ui.page("/survey/thanks")
-def survey_thanks_page():
+def survey_thanks_page(request: Request):
+    context = (request.query_params.get("context") or "").strip()
     with ui.column().classes(
         "w-full min-h-[60vh] flex flex-col items-center justify-center px-6 py-12 bg-slate-50"
     ):
         with ui.card().classes("max-w-lg w-full p-8 text-center shadow-md"):
+            if context:
+                ui.label(context).classes("text-sm font-semibold text-slate-600 mb-2")
             ui.label("Thank you").classes("text-2xl font-bold text-slate-900 mb-3")
             ui.label(
                 "Your responses were submitted successfully. You can close this window."

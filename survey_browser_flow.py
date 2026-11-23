@@ -22,6 +22,32 @@ from time_per_question import Time_Per_Question
 _survey_sessions: dict[str, dict[str, Any]] = {}
 
 
+def _group_heading(study: dict[str, Any] | None) -> str:
+    """Respondent-facing label: Group (Category - Code)."""
+    study = study or {}
+    group = str(study.get("group") or study.get("instructor") or "").strip()
+    category = str(study.get("category") or study.get("course") or "").strip()
+    code = str(study.get("code") or study.get("section") or "").strip()
+    detail = " - ".join(piece for piece in (category, code) if piece)
+    if group and detail:
+        return f"{group} ({detail})"
+    return group or detail
+
+
+def _show_group_heading(study: dict[str, Any] | None) -> None:
+    heading = _group_heading(study)
+    if heading:
+        ui.label(heading).classes("text-sm font-semibold text-slate-600")
+
+
+def _thanks_path(study: dict[str, Any] | None) -> str:
+    heading = _group_heading(study)
+    if not heading:
+        return "/survey/thanks"
+    from urllib.parse import quote
+    return f"/survey/thanks?context={quote(heading)}"
+
+
 def _cid() -> str:
     return str(context.client.id)
 
@@ -257,9 +283,10 @@ def submit_survey(dialog, session_factory, s: dict[str, Any]) -> None:
 
     dialog.close()
     clear_survey_session()
-    ui.navigate.to("/survey/thanks")
+    thanks = _thanks_path(s.get("study"))
+    ui.navigate.to(thanks)
     try:
-        ui.navigate.history.replace("/survey/thanks")
+        ui.navigate.history.replace(thanks)
     except AttributeError:
         pass
 
@@ -361,9 +388,10 @@ def _commit_current_part(s: dict[str, Any]) -> None:
     if is_final:
         dialog.close()
         clear_survey_session()
-        ui.navigate.to("/survey/thanks")
+        thanks = _thanks_path(s.get("study"))
+        ui.navigate.to(thanks)
         try:
-            ui.navigate.history.replace("/survey/thanks")
+            ui.navigate.history.replace(thanks)
         except AttributeError:
             pass
         return
@@ -591,6 +619,7 @@ def _render_all_questions(s: dict[str, Any], survey: dict[str, Any], refresh_fn)
         with ui.card().classes(
             "w-full max-w-xl bg-white shadow-sm border border-gray-200 rounded-lg px-6 py-5"
         ):
+            _show_group_heading(s.get("study"))
             ui.label(survey.get("title", "Survey")).classes("text-2xl font-bold text-gray-800")
             if s.get("parts"):
                 ui.label(
@@ -646,6 +675,7 @@ def survey_page(dialog, session_factory):
             with ui.card().classes(
                 "w-full max-w-xl bg-white shadow-lg border border-gray-200 rounded-lg px-8 py-12 text-center"
             ):
+                _show_group_heading(s.get("study"))
                 ui.label("Analyzing your responses...").classes(
                     "text-2xl font-bold text-gray-800 mb-4"
                 )
@@ -659,6 +689,7 @@ def survey_page(dialog, session_factory):
             with ui.card().classes(
                 "w-full max-w-xl bg-white shadow-lg border border-gray-200 rounded-lg px-8 py-12 text-center"
             ):
+                _show_group_heading(s.get("study"))
                 ui.label("Thank you for your feedback!").classes(
                     "text-3xl font-bold text-gray-800 mb-3"
                 )
@@ -681,6 +712,7 @@ def survey_page(dialog, session_factory):
             with ui.card().classes(
                 "w-full max-w-xl bg-white shadow-lg border border-gray-200 rounded-lg px-8 py-10"
             ):
+                _show_group_heading(s.get("study"))
                 ui.label(survey.get("title", "Survey")).classes("text-2xl font-bold text-gray-800")
                 if s.get("parts"):
                     ui.label(
@@ -728,6 +760,7 @@ def survey_page(dialog, session_factory):
         with ui.card().classes(
             "w-full max-w-xl bg-white shadow-sm border border-gray-200 rounded-lg px-6 py-5"
         ):
+            _show_group_heading(s.get("study"))
             ui.label(survey.get("title", "Survey")).classes(
                 "text-2xl font-bold text-gray-800"
             )
@@ -905,6 +938,7 @@ def render_survey_entry_with_landing(
         with landing_block:
             if landing:
                 with ui.column().classes("max-w-3xl mx-auto w-full px-4 py-8 gap-6"):
+                    _show_group_heading(survey.get("study"))
                     ui.label(survey.get("title", "Survey")).classes("text-2xl font-bold text-slate-900")
                     ui.html(landing, sanitize=False).classes(
                         "survey-landing text-slate-800 text-base leading-relaxed [&_a]:text-blue-700 [&_a]:underline"
@@ -919,6 +953,7 @@ def render_survey_entry_with_landing(
             note_block.visible = False
             if note:
                 with ui.column().classes("max-w-3xl mx-auto w-full px-4 py-8 gap-6"):
+                    _show_group_heading(survey.get("study"))
                     ui.label(survey.get("title", "Survey")).classes("text-2xl font-bold text-slate-900")
                     ui.html(note, sanitize=False).classes(
                         "survey-landing text-slate-800 text-base leading-relaxed [&_a]:text-blue-700 [&_a]:underline"
