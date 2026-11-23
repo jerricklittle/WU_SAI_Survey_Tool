@@ -67,23 +67,96 @@ def _ensure_study_columns() -> None:
     if not insp.has_table("survey_questions") or not insp.has_table("survey_parts"):
         return
     cols = {c["name"] for c in insp.get_columns("survey_questions")}
-    if "part_id" in cols:
-        return
-    if engine.dialect.name == "postgresql":
-        stmt = (
-            "ALTER TABLE survey_questions ADD COLUMN IF NOT EXISTS part_id INTEGER "
-            "REFERENCES survey_parts(id) ON DELETE SET NULL"
-        )
-    else:
-        stmt = (
-            "ALTER TABLE survey_questions ADD COLUMN part_id INTEGER "
-            "REFERENCES survey_parts(id) ON DELETE SET NULL"
-        )
-    try:
-        with engine.begin() as conn:
-            conn.execute(text(stmt))
-    except (OperationalError, ProgrammingError):
-        pass
+    if "part_id" not in cols:
+        if engine.dialect.name == "postgresql":
+            stmt = (
+                "ALTER TABLE survey_questions ADD COLUMN IF NOT EXISTS part_id INTEGER "
+                "REFERENCES survey_parts(id) ON DELETE SET NULL"
+            )
+        else:
+            stmt = (
+                "ALTER TABLE survey_questions ADD COLUMN part_id INTEGER "
+                "REFERENCES survey_parts(id) ON DELETE SET NULL"
+            )
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(stmt))
+        except (OperationalError, ProgrammingError):
+            pass
+    part_cols = {c["name"] for c in insp.get_columns("survey_parts")}
+    if "llm_followups" not in part_cols:
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "ALTER TABLE survey_parts ADD COLUMN llm_followups BOOLEAN NOT NULL DEFAULT FALSE"
+                ))
+        except (OperationalError, ProgrammingError):
+            pass
+    if "llm_question_count" not in part_cols:
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "ALTER TABLE survey_parts ADD COLUMN llm_question_count INTEGER NOT NULL DEFAULT 3"
+                ))
+        except (OperationalError, ProgrammingError):
+            pass
+    if "llm_instructions" not in part_cols:
+        try:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE survey_parts ADD COLUMN llm_instructions TEXT"))
+        except (OperationalError, ProgrammingError):
+            pass
+    if "link_url" not in part_cols:
+        try:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE survey_parts ADD COLUMN link_url TEXT"))
+        except (OperationalError, ProgrammingError):
+            pass
+    if "is_link" not in part_cols:
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "ALTER TABLE survey_parts ADD COLUMN is_link BOOLEAN NOT NULL DEFAULT FALSE"
+                ))
+        except (OperationalError, ProgrammingError):
+            pass
+    if "one_per_page" not in part_cols:
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "ALTER TABLE survey_parts ADD COLUMN one_per_page BOOLEAN NOT NULL DEFAULT TRUE"
+                ))
+        except (OperationalError, ProgrammingError):
+            pass
+    link_cols = {c["name"] for c in insp.get_columns("survey_part_arms")} if insp.has_table("survey_part_arms") else set()
+    if "one_per_page" not in link_cols and insp.has_table("survey_part_arms"):
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "ALTER TABLE survey_part_arms ADD COLUMN one_per_page BOOLEAN NOT NULL DEFAULT TRUE"
+                ))
+                conn.execute(text(
+                    "UPDATE survey_part_arms AS membership "
+                    "SET one_per_page = part.one_per_page "
+                    "FROM survey_parts AS part "
+                    "WHERE membership.part_id = part.id"
+                ))
+        except (OperationalError, ProgrammingError):
+            pass
+    if "sort_order" not in link_cols and insp.has_table("survey_part_arms"):
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "ALTER TABLE survey_part_arms ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0"
+                ))
+                conn.execute(text(
+                    "UPDATE survey_part_arms AS membership "
+                    "SET sort_order = part.sort_order "
+                    "FROM survey_parts AS part "
+                    "WHERE membership.part_id = part.id"
+                ))
+        except (OperationalError, ProgrammingError):
+            pass
 
 
 _ensure_study_columns()
@@ -157,20 +230,19 @@ def landing_page():
     external_consent = get_informed_consent_url()
     with ui.column().classes("w-full min-h-screen bg-slate-50"):
         with ui.column().classes("max-w-3xl mx-auto px-6 py-12 gap-6"):
-            ui.label("Student Assessment Instrument (SAI)").classes(
+            ui.label("Survey DIVA").classes(
                 "text-3xl md:text-4xl font-bold text-slate-900"
             )
-            ui.label("Research Project").classes("text-xl text-slate-600 -mt-2")
+            ui.label("Surveys and questionnaires").classes("text-xl text-slate-600 -mt-2")
 
             ui.markdown(
                 """
-This site supports **SAI (Student Assessment Instrument)** research: designing and
-evaluating how we gather instructional feedback while protecting respondents.
+Design a survey from parts, assign those parts to comparison groups, and send each
+person a personal link. The link does not show which group they are in.
 
-Participation is **by invitation only**, using a **personalized link** issued by
-the Institutional Research Office. Those links carry a pseudonymous identifier so the
-office can manage consent and longitudinal tracking **without** this application storing
-directly identifying participation information in the survey link itself.
+Participation is **by invitation**. Whoever sends the links keeps the list that
+matches a link to a person. This application stores the response, not a name or
+email address.
 """
             ).classes("text-slate-700 leading-relaxed")
 
@@ -197,7 +269,7 @@ directly identifying participation information in the survey link itself.
 
             ui.label("Staff access").classes("text-lg font-semibold text-slate-800")
             ui.label(
-                "Administrators, faculty, and institutional research staff sign in here."
+                "Survey editors and link managers sign in here."
             ).classes("text-sm text-slate-600")
             ui.button("Staff sign-in", on_click=lambda: ui.navigate.to("/login")).classes(
                 "bg-slate-800 text-white px-5 py-2 rounded-lg w-fit"
@@ -214,7 +286,7 @@ def consent_page():
                 """
 By submitting this survey, you acknowledge that you are providing your responses voluntarily and consent to the collection of the data you provide. Your participation in this survey is completely voluntary, and you may choose to exit the survey at any time without any negative consequences.
 Please note that the responses you provide will only be used for research purposes and will remain confidential. This survey does not collect any identifying information. 
-The link provided is unique to you, please do not share it with others. This email and link was sent through the Institutional Research department, providing two layers of anonymity between you and the researchers.
+The link provided is unique to you. Please do not share it. The sender keeps the list that matches links to people. This survey does not store your name or email address.
 """
             ).classes("text-slate-700 leading-relaxed")
             if external:
@@ -251,7 +323,7 @@ def student_survey_entry(survey_public_id: str, request: Request):
             with ui.card().classes("max-w-lg w-full p-8 text-center"):
                 ui.label("Personalized link required").classes("text-xl font-bold text-slate-900 mb-2")
                 ui.label(
-                    "Open the survey using the link emailed to you by the institution. "
+                    "Open the survey using the personal link you were sent. "
                     "It includes a secure participant code."
                 ).classes("text-slate-600")
                 ui.button("Project home", on_click=lambda: ui.navigate.to("/")).classes("mt-6")
@@ -287,7 +359,7 @@ def student_survey_entry(survey_public_id: str, request: Request):
                 ui.label("Survey already completed").classes("text-xl font-bold text-slate-900 mb-2")
                 ui.label(
                     "This link has already been used to submit a response for this survey. "
-                    "If you believe this is a mistake, contact your research office."
+                    "If you believe this is a mistake, contact the person who sent your link."
                 ).classes("text-slate-600")
                 ui.button("Project home", on_click=lambda: ui.navigate.to("/")).classes("mt-6")
         return
@@ -297,7 +369,7 @@ def student_survey_entry(survey_public_id: str, request: Request):
 
 @ui.page("/s/{token}")
 def participant_study_link(token: str):
-    """Opaque study link: class, instructor, semester, and arm are stored with the token."""
+    """Opaque survey link. Group and comparison arm are stored with the token, not in the URL."""
     from study_links import answers_from_payload, load_response_row, personalize_survey, response_is_complete
     from survey_from_db import load_survey_from_db
     from survey_models import CourseSection, ParticipantLink, Survey, SurveyArm
@@ -359,7 +431,7 @@ def participant_study_link(token: str):
                 ui.label("Survey already completed").classes("text-xl font-bold text-slate-900 mb-2")
                 ui.label(
                     "This link has already been used to submit a response for this survey. "
-                    "If you believe this is a mistake, contact your research office."
+                    "If you believe this is a mistake, contact the person who sent your link."
                 ).classes("text-slate-600")
                 ui.button("Project home", on_click=lambda: ui.navigate.to("/")).classes("mt-6")
         return

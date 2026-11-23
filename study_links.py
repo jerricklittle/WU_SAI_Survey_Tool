@@ -1,10 +1,11 @@
-"""Treatment arms, survey parts, class sections, and opaque participant links."""
+"""Comparison groups, survey parts, respondent groups, and opaque participant links."""
 
 from __future__ import annotations
 
 import csv
 import io
 import random
+import re
 import secrets
 import uuid
 from datetime import datetime
@@ -24,23 +25,41 @@ from survey_models import (
 )
 from time_per_question import Time_Per_Question
 
+def normalize_link_url(value) -> str:
+    """Accept a page address with or without a scheme."""
+    url = str(value or "").strip()
+    if not url:
+        return ""
+    if not re.match(r"^https?://", url, flags=re.IGNORECASE):
+        url = "https://" + url
+    return url
+
+
+def normalize_llm_question_count(value, default: int = 3) -> int:
+    """Keep an LLM part's question count between 1 and 10."""
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        count = default
+    return max(1, min(count, 10))
+
+
 DEFAULT_ARMS: list[tuple[str, str, bool, str]] = [
     (
         "negative_control",
-        "Negative control (Canvas SAI)",
+        "Negative control",
         False,
-        "<p>Your Student Assessment of Instruction for this course is in Canvas. "
-        "After you finish it there, continue to the short survey about the experience.</p>",
+        "",
     ),
     (
         "positive_control",
-        "Positive control (no LLM follow-ups)",
+        "Positive control",
         False,
         "",
     ),
     (
         "experimental",
-        "Experimental (LLM follow-ups)",
+        "Experimental",
         True,
         "",
     ),
@@ -172,10 +191,10 @@ def iter_study_link_rows(session, survey_id: int, base_url: str) -> list[list[st
     arms = {arm.id: arm for arm in ordered_arms(session, survey_id)}
     base = (base_url or "").rstrip("/")
     rows: list[list[str]] = [[
-        "semester",
-        "instructor",
-        "course",
-        "section",
+        "period",
+        "group",
+        "category",
+        "code",
         "arm",
         "url",
     ]]
@@ -235,6 +254,12 @@ def clone_study_structure(session, src_survey_id: int, dest_survey_id: int) -> d
             survey_id=dest_survey_id,
             title=part.title,
             submit_label=part.submit_label or "Submit",
+            llm_followups=bool(part.llm_followups),
+            llm_question_count=normalize_llm_question_count(part.llm_question_count),
+            llm_instructions=part.llm_instructions,
+            link_url=part.link_url,
+            is_link=bool(part.is_link),
+            one_per_page=bool(part.one_per_page),
             sort_order=part.sort_order,
         )
         session.add(copied)
@@ -243,12 +268,27 @@ def clone_study_structure(session, src_survey_id: int, dest_survey_id: int) -> d
         for old_arm_id in links_by_part.get(part.id, []):
             new_arm_id = arm_map.get(old_arm_id)
             if new_arm_id is not None:
-                session.add(SurveyPartArm(part_id=copied.id, arm_id=new_arm_id))
+                session.add(SurveyPartArm(
+                    part_id=copied.id,
+                    arm_id=new_arm_id,
+                    sort_order=next(
+                        (link.sort_order for link in links if link.part_id == part.id and link.arm_id == old_arm_id),
+                        1,
+                    ),
+                    one_per_page=next(
+                        (
+                            bool(link.one_per_page)
+                            for link in links
+                            if link.part_id == part.id and link.arm_id == old_arm_id
+                        ),
+                        True,
+                    ),
+                ))
     return part_map
 
 
 def personalize_survey(payload: dict[str, Any], arm: SurveyArm, section: CourseSection, semester: str) -> dict[str, Any]:
-    """Restrict a survey payload to one arm. The student URL does not carry these fields."""
+    """Restrict a survey payload to one comparison group. The respondent URL does not carry these fields."""
     import copy
 
     data = copy.deepcopy(payload)
@@ -256,19 +296,31 @@ def personalize_survey(payload: dict[str, Any], arm: SurveyArm, section: CourseS
     by_id = {str(q.get("id")): q for q in questions if isinstance(q, dict)}
     parts_out: list[dict[str, Any]] = []
     ordered_questions: list[dict[str, Any]] = []
-    for part in data.get("parts") or []:
-        if arm.key not in (part.get("armKeys") or []):
-            continue
+    included = [
+        part for part in (data.get("parts") or [])
+        if arm.key in (part.get("armKeys") or [])
+    ]
+    included.sort(key=lambda part: ((part.get("armOrder") or {}).get(arm.key, 0), part.get("id") or 0))
+    for part in included:
         ids = [qid for qid in part.get("questionIds") or [] if qid in by_id]
-        if not ids:
+        is_llm = bool(part.get("llmFollowups"))
+        link_url = normalize_link_url(part.get("linkUrl"))
+        is_link = bool(part.get("isLink")) and not is_llm and bool(link_url)
+        if not ids and not is_llm and not is_link:
             continue
         parts_out.append({
             "id": part["id"],
             "title": part.get("title") or "Part",
             "submitLabel": part.get("submitLabel") or "Submit",
-            "questionIds": ids,
+            "llmFollowups": is_llm,
+            "llmQuestionCount": normalize_llm_question_count(part.get("llmQuestionCount")),
+            "llmInstructions": part.get("llmInstructions") or "",
+            "linkUrl": link_url if is_link else "",
+            "onePerPage": bool((part.get("armPaging") or {}).get(arm.key, part.get("onePerPage", True))),
+            "questionIds": [] if is_llm or is_link else ids,
         })
-        ordered_questions.extend(by_id[qid] for qid in ids)
+        if not is_llm and not is_link:
+            ordered_questions.extend(by_id[qid] for qid in ids)
     if data.get("parts"):
         data["questions"] = ordered_questions
         data["parts"] = parts_out
@@ -277,7 +329,7 @@ def personalize_survey(payload: dict[str, Any], arm: SurveyArm, section: CourseS
         data["partMode"] = False
         data["parts"] = []
     data.pop("arms", None)
-    if not arm.llm_followups:
+    if not any(part.get("llmFollowups") for part in parts_out):
         for question in data.get("questions") or []:
             question["adaptive"] = False
             question.pop("prompt_text", None)
@@ -285,12 +337,12 @@ def personalize_survey(payload: dict[str, Any], arm: SurveyArm, section: CourseS
     data["study"] = {
         "armKey": arm.key,
         "armLabel": arm.label,
-        "llmFollowups": bool(arm.llm_followups),
+        "llmFollowups": any(part.get("llmFollowups") for part in parts_out),
         "sectionId": section.id,
-        "semester": (semester or "").strip(),
-        "instructor": section.instructor_name,
-        "course": section.course_code,
-        "section": section.section_code,
+        "period": (semester or "").strip(),
+        "group": section.instructor_name,
+        "category": section.course_code,
+        "code": section.section_code,
     }
     return data
 
@@ -359,6 +411,7 @@ def upsert_part_response(
     parts_meta[str(part_id)] = {
         "title": part.get("title") or "",
         "submittedAt": now,
+        "linkUrl": part.get("linkUrl") or "",
     }
     payload.update({
         "surveyId": survey_public_id,
@@ -373,10 +426,10 @@ def upsert_part_response(
         "arm": study.get("armKey") or "",
         "armLabel": study.get("armLabel") or "",
         "sectionId": study.get("sectionId"),
-        "semester": study.get("semester") or "",
-        "instructor": study.get("instructor") or "",
-        "course": study.get("course") or "",
-        "section": study.get("section") or "",
+        "period": study.get("period") or study.get("semester") or "",
+        "group": study.get("group") or study.get("instructor") or "",
+        "category": study.get("category") or study.get("course") or "",
+        "code": study.get("code") or study.get("section") or "",
     })
     row.response = payload
     flag_modified(row, "response")

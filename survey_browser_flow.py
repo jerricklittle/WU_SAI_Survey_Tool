@@ -14,9 +14,9 @@ from nicegui import context, ui
 from sqlalchemy.exc import IntegrityError
 
 from Question_Timer import Question_Timer
-from chatbot import analyze_all_responses_for_survey
+from chatbot import analyze_all_responses_for_survey, analyze_part_followups
+from study_links import normalize_llm_question_count, upsert_part_response
 from responses import Response
-from study_links import upsert_part_response
 from time_per_question import Time_Per_Question
 
 _survey_sessions: dict[str, dict[str, Any]] = {}
@@ -93,6 +93,17 @@ def _dynamic_question_list(s: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _get_all_questions(s: dict[str, Any]) -> list[dict[str, Any]]:
     return s["survey"]["questions"] + s["dynamic_questions"]
+
+
+def _is_answered(item: dict[str, Any] | None) -> bool:
+    if not item:
+        return False
+    value = item.get("value")
+    if value is None or value == "":
+        return False
+    if isinstance(value, list) and not value:
+        return False
+    return True
 
 
 def _save_answer(s: dict[str, Any], question: dict[str, Any], value: Any) -> None:
@@ -278,17 +289,26 @@ def _activate_part(s: dict[str, Any], index: int) -> None:
         return
     index = max(0, min(index, len(parts) - 1))
     part = parts[index]
-    by_id = {str(q.get("id")): q for q in s["survey"].get("questions") or []}
-    # The full arm question list is kept on the survey until the first activation replaces it.
+    # The first part replaces survey["questions"] with its own subset. Later parts must
+    # still resolve their questions from the full list captured before that replacement.
     if "arm_questions" not in s:
         s["arm_questions"] = list(s["survey"].get("questions") or [])
-        by_id = {str(q.get("id")): q for q in s["arm_questions"]}
+    by_id = {str(q.get("id")): q for q in s.get("arm_questions") or []}
     chosen = [by_id[qid] for qid in part.get("questionIds") or [] if qid in by_id]
     s["survey"]["questions"] = chosen
     s["current_part_question_ids"] = [str(q.get("id")) for q in chosen]
     s["dynamic_questions"] = []
     s["current_index"] = 0
     s["part_index"] = index
+    s["llm_part"] = bool(part.get("llmFollowups"))
+    s["link_url"] = "" if s["llm_part"] else str(part.get("linkUrl") or "").strip()
+    s["link_part"] = bool(s["link_url"])
+    s["one_per_page"] = bool(part.get("onePerPage", True))
+    s["llm_started"] = False
+    s["llm_question_count"] = normalize_llm_question_count(part.get("llmQuestionCount"))
+    s["llm_instructions"] = str(part.get("llmInstructions") or "")
+    previous = parts[index - 1] if index else None
+    s["llm_source_ids"] = [str(qid) for qid in (previous.get("questionIds") or [])] if previous else []
     s["survey_state"] = {"mode": "static", "static_count": len(chosen)}
 
 
@@ -357,27 +377,80 @@ async def _generate_dynamic_questions(s: dict[str, Any], refresh_fn) -> None:
     client = s.get("_nicegui_client") or context.client
     text_responses = []
     survey = s["survey"]
-    allowed = {str(qid) for qid in (s.get("current_part_question_ids") or [])}
-    for q_id, answer in s["answers"].items():
-        if allowed and str(q_id) not in allowed:
-            continue
-        if answer["questionType"] == "text" and answer.get("value"):
-            original_q = None
-            for q in survey["questions"]:
-                if q["id"] == q_id:
-                    original_q = q
-                    break
-            if original_q and original_q.get("adaptive", False):
-                text_value = str(answer["value"]).strip()
-                if len(text_value) >= 15:
-                    text_responses.append(
+    lookup = list(s.get("arm_questions") or []) + list(survey.get("questions") or [])
+    if s.get("llm_part"):
+        source_ids = {str(qid) for qid in (s.get("llm_source_ids") or [])}
+        for q_id, answer in s["answers"].items():
+            if str(q_id) not in source_ids or answer.get("questionType") != "text" or not answer.get("value"):
+                continue
+            text_value = str(answer["value"]).strip()
+            if not text_value:
+                continue
+            original_q = next((q for q in lookup if q.get("id") == q_id), None)
+            text_responses.append(
+                {
+                    "question_id": q_id,
+                    "text": text_value,
+                    "prompt": (original_q or {}).get("prompt") or answer.get("questionPrompt") or "",
+                }
+            )
+        if not text_responses:
+            _queue_submit(s)
+            return
+        try:
+            result = await analyze_part_followups(
+                text_responses,
+                s.get("llm_question_count") or 3,
+                s.get("llm_instructions") or "",
+            )
+            data = json.loads(result)
+            limit = normalize_llm_question_count(s.get("llm_question_count"))
+            if data.get("needs_followup"):
+                for idx, fq in enumerate(data.get("followup_questions") or [], 1):
+                    prompt = str((fq or {}).get("prompt") or "").strip()
+                    if not prompt:
+                        continue
+                    s["dynamic_questions"].append(
                         {
-                            "question_id": q_id,
-                            "text": text_value,
-                            "prompt": original_q["prompt"],
-                            "prompt_text": original_q.get("prompt_text"),
+                            "id": f"followup_{idx}",
+                            "type": "text",
+                            "prompt": prompt,
+                            "triggered_by": "previous_part",
                         }
                     )
+                    if len(s["dynamic_questions"]) >= limit:
+                        break
+            s["survey_state"]["mode"] = "transition" if s["dynamic_questions"] else "complete"
+        except Exception:
+            s["survey_state"]["mode"] = "complete"
+        if s["survey_state"]["mode"] == "complete":
+            _queue_submit(s)
+        else:
+            with client:
+                refresh_fn()
+        return
+    else:
+        allowed = {str(qid) for qid in (s.get("current_part_question_ids") or [])}
+        for q_id, answer in s["answers"].items():
+            if allowed and str(q_id) not in allowed:
+                continue
+            if answer["questionType"] == "text" and answer.get("value"):
+                original_q = None
+                for q in lookup:
+                    if q["id"] == q_id:
+                        original_q = q
+                        break
+                if original_q and original_q.get("adaptive", False):
+                    text_value = str(answer["value"]).strip()
+                    if len(text_value) >= 15:
+                        text_responses.append(
+                            {
+                                "question_id": q_id,
+                                "text": text_value,
+                                "prompt": original_q["prompt"],
+                                "prompt_text": original_q.get("prompt_text"),
+                            }
+                        )
 
     if not text_responses:
         _queue_submit(s)
@@ -452,9 +525,96 @@ def _prev_page(s: dict[str, Any], refresh_fn) -> None:
         refresh_fn()
 
 
+def _render_question_inputs(s: dict[str, Any], q: dict[str, Any], refresh_fn) -> None:
+    """Draw one question. Choice answers update the progress bar."""
+
+    def store(value, question=q) -> None:
+        if value is None:
+            return
+        previous = s["answers"].get(question["id"], {}).get("value")
+        if previous == value:
+            return
+        _save_answer(s, question, value)
+        refresh_fn()
+
+    if q["type"] == "likert":
+        labels = q["scale"]["labels"]
+        options = [label for _, label in sorted(labels.items(), key=lambda x: int(x[0]))]
+        ui.radio(
+            options,
+            value=s["answers"].get(q["id"], {}).get("value"),
+            on_change=lambda e: store(e.value),
+        ).classes("gap-2")
+    elif q["type"] == "boolean":
+        ui.radio(
+            [q["options"]["trueLabel"], q["options"]["falseLabel"]],
+            value=s["answers"].get(q["id"], {}).get("value"),
+            on_change=lambda e: store(e.value == q["options"]["trueLabel"]),
+        ).classes("gap-2")
+    elif q["type"] == "text":
+        textarea = ui.textarea(
+            placeholder=q.get("text", {}).get("placeholder", ""),
+            value=s["answers"].get(q["id"], {}).get("value", ""),
+        ).classes("w-full")
+        def remember_text(field=textarea, question=q) -> None:
+            previous = s["answers"].get(question["id"], {}).get("value", "")
+            current = field.value or ""
+            if current == (previous or ""):
+                return
+            _save_answer(s, question, current)
+            refresh_fn()
+
+        textarea.on("blur", lambda e: remember_text())
+    elif q["type"] == "multi":
+        opts = q.get("options") or []
+        current_vals = list(s["answers"].get(q["id"], {}).get("value") or [])
+        ui.select(
+            opts,
+            multiple=True,
+            label="Select all that apply",
+            value=current_vals,
+            on_change=lambda e: store(list(e.value or [])),
+        ).classes("w-full")
+
+
+def _render_all_questions(s: dict[str, Any], survey: dict[str, Any], refresh_fn) -> None:
+    questions = list(survey.get("questions") or [])
+    total = len(questions)
+    answered = sum(1 for q in questions if _is_answered(s["answers"].get(q["id"])))
+    if questions:
+        s["timer"].start_question(questions[0]["id"])
+    part = (s.get("parts") or [{}])[int(s.get("part_index") or 0)]
+    part_label = part.get("submitLabel") or "Submit"
+    with ui.column().classes(
+        "w-full min-h-0 max-h-full flex-1 overflow-y-auto bg-gray-100 flex flex-col items-center justify-start py-4 gap-3"
+    ):
+        with ui.card().classes(
+            "w-full max-w-xl bg-white shadow-sm border border-gray-200 rounded-lg px-6 py-5"
+        ):
+            ui.label(survey.get("title", "Survey")).classes("text-2xl font-bold text-gray-800")
+            if s.get("parts"):
+                ui.label(
+                    f'{part.get("title") or "Part"} · Part {int(s.get("part_index") or 0) + 1} of {len(s["parts"])}'
+                ).classes("text-sm text-gray-500 mt-1")
+            ui.label(f"{answered} of {total} answered").classes("text-xs text-gray-400 mt-2")
+            ui.linear_progress(value=(answered / total) if total else 0, color="blue-600").classes("mt-1 h-1")
+        for index, q in enumerate(questions, 1):
+            with ui.card().classes(
+                "w-full max-w-xl bg-white shadow-sm border border-gray-200 rounded-lg px-6 py-6"
+            ):
+                ui.label(f"{index}. {q['prompt']}").classes("text-base font-semibold text-gray-800 mb-4")
+                _render_question_inputs(s, q, refresh_fn)
+        ui.button(
+            part_label,
+            on_click=lambda: _queue_part_submit(s),
+        ).classes("bg-green-600 text-white hover:bg-green-700 mb-6")
+
+
 def _advance_to_dynamic(s: dict[str, Any], refresh_fn) -> None:
     s["survey_state"]["mode"] = "dynamic"
-    s["current_index"] += 1
+    # An LLM part has no questions of its own, so the first follow-up is index 0.
+    # A legacy survey starts follow-ups immediately after the last authored question.
+    s["current_index"] = int(s["survey_state"].get("static_count") or 0)
     refresh_fn()
 
 
@@ -467,6 +627,17 @@ def survey_page(dialog, session_factory):
     survey = s["survey"]
     mode = s["survey_state"]["mode"]
     refresh = survey_page.refresh
+    if (
+        s.get("part_mode")
+        and s.get("llm_part")
+        and mode == "static"
+        and not (survey.get("questions") or [])
+        and not s.get("dynamic_questions")
+        and not s.get("llm_started")
+    ):
+        s["llm_started"] = True
+        ui.timer(0.05, lambda: _finalize_static_block(s, refresh), once=True)
+        mode = "loading"
 
     if mode == "loading":
         with ui.column().classes(
@@ -501,7 +672,47 @@ def survey_page(dialog, session_factory):
                 ).classes("bg-blue-600 text-white text-lg px-8 py-3 rounded-lg hover:bg-blue-700")
         return
 
+    if s.get("part_mode") and s.get("link_part") and s.get("link_url"):
+        part = (s.get("parts") or [{}])[int(s.get("part_index") or 0)]
+        continue_label = part.get("submitLabel") or "Continue"
+        with ui.column().classes(
+            "w-full min-h-0 max-h-full flex-1 bg-gray-100 flex flex-col items-center justify-center gap-4 py-6"
+        ):
+            with ui.card().classes(
+                "w-full max-w-xl bg-white shadow-lg border border-gray-200 rounded-lg px-8 py-10"
+            ):
+                ui.label(survey.get("title", "Survey")).classes("text-2xl font-bold text-gray-800")
+                if s.get("parts"):
+                    ui.label(
+                        f'{part.get("title") or "Part"} · Part {int(s.get("part_index") or 0) + 1} of {len(s["parts"])}'
+                    ).classes("text-sm text-gray-500 mt-1 mb-4")
+                ui.label(
+                    "Open the page, finish what you need to do there, then come back and continue."
+                ).classes("text-gray-700 mb-4")
+                ui.link(
+                    "Open page",
+                    s["link_url"],
+                    new_tab=True,
+                ).classes(
+                    "inline-block bg-blue-600 text-white text-lg px-8 py-3 rounded-lg hover:bg-blue-700 no-underline"
+                )
+                ui.button(
+                    continue_label,
+                    on_click=lambda: _queue_part_submit(s),
+                ).classes("bg-green-600 text-white mt-6")
+        return
+
     questions = _get_all_questions(s)
+    show_all = (
+        s.get("part_mode")
+        and not s.get("one_per_page", True)
+        and not s.get("llm_part")
+        and not s.get("link_part")
+        and s["survey_state"]["mode"] == "static"
+    )
+    if show_all and questions:
+        _render_all_questions(s, survey, refresh)
+        return
     if not questions:
         with ui.column().classes("w-full items-center justify-center py-12"):
             ui.label("This link has no questions to show.").classes("text-lg text-gray-700")
@@ -517,7 +728,7 @@ def survey_page(dialog, session_factory):
         with ui.card().classes(
             "w-full max-w-xl bg-white shadow-sm border border-gray-200 rounded-lg px-6 py-5"
         ):
-            ui.label(survey.get("title", "SAI survey")).classes(
+            ui.label(survey.get("title", "Survey")).classes(
                 "text-2xl font-bold text-gray-800"
             )
             if s.get("part_mode") and s.get("parts"):
@@ -593,11 +804,7 @@ def survey_page(dialog, session_factory):
                 part_needs_llm = False
                 if s.get("part_mode") and s.get("parts"):
                     part_label = s["parts"][s.get("part_index") or 0].get("submitLabel") or "Submit"
-                    part_ids = set(s.get("current_part_question_ids") or [])
-                    part_needs_llm = any(
-                        bool(question.get("adaptive")) and str(question.get("id")) in part_ids
-                        for question in (s["survey"].get("questions") or [])
-                    )
+                    part_needs_llm = bool(s.get("llm_part"))
 
                 if is_last_static and s.get("part_mode") and not part_needs_llm:
                     ui.button(

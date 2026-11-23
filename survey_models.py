@@ -27,7 +27,7 @@ class Survey(Base):
     is_active = Column(Boolean, default=True)
     created_by = Column(Integer, ForeignKey('users.id'), nullable=True)  # Who owns this survey
     settings = Column(JSONB, nullable=True)  # Store survey settings like allowBack, etc.
-    # Term this instrument is fielded, e.g. "2026-spring". Not shown in the student URL.
+    # Optional wave or round label, e.g. "Wave 1". Not shown in the respondent URL.
     semester = Column(String(64), nullable=True)
     # Naive UTC: first moment the survey accepts responses; None = no start restriction.
     opens_at = Column(DateTime, nullable=True)
@@ -161,6 +161,13 @@ class SurveyPart(Base):
     survey_id = Column(Integer, ForeignKey('surveys.id', ondelete='CASCADE'), nullable=False, index=True)
     title = Column(String(255), nullable=False)
     submit_label = Column(String(80), nullable=False, default='Submit')
+    # This part writes follow-up questions from the open-ended answers in the part before it.
+    llm_followups = Column(Boolean, nullable=False, default=False)
+    llm_question_count = Column(Integer, nullable=False, default=3)
+    llm_instructions = Column(Text, nullable=True)
+    link_url = Column(Text, nullable=True)
+    is_link = Column(Boolean, nullable=False, default=False)
+    one_per_page = Column(Boolean, nullable=False, default=True)
     sort_order = Column(Integer, nullable=False, default=1)
 
     survey = relationship("Survey")
@@ -175,10 +182,12 @@ class SurveyPartArm(Base):
 
     part_id = Column(Integer, ForeignKey('survey_parts.id', ondelete='CASCADE'), primary_key=True)
     arm_id = Column(Integer, ForeignKey('survey_arms.id', ondelete='CASCADE'), primary_key=True)
+    sort_order = Column(Integer, nullable=False, default=1)
+    one_per_page = Column(Boolean, nullable=False, default=True)
 
 
 class CourseSection(Base):
-    """One class section fielding this survey. Students are not named here."""
+    """One group of respondents. People are not named here."""
     __tablename__ = "course_sections"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -198,7 +207,7 @@ class CourseSection(Base):
 
 
 class ParticipantLink(Base):
-    """Opaque student URL. Class, instructor, semester, and arm live on this row, not in the link."""
+    """Opaque respondent URL. Group and comparison arm live on this row, not in the link."""
     __tablename__ = "participant_links"
     __table_args__ = (
         UniqueConstraint('section_id', 'seat_index', name='uq_section_seat'),

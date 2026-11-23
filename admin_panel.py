@@ -35,7 +35,6 @@ from survey_models import (
 )
 from user import User
 from survey_from_db import load_survey_from_db
-from chatbot import DEFAULT_ADAPTIVE_PROMPT_TEXT
 from app_config import get_public_base_url
 from authentication import (
     is_admin,
@@ -78,10 +77,68 @@ def _ensure_study_schema() -> None:
                 'ALTER TABLE survey_questions ADD COLUMN part_id INTEGER '
                 'REFERENCES survey_parts(id) ON DELETE SET NULL'
             )
+    if insp.has_table('survey_parts'):
+        cols = {c['name'] for c in insp.get_columns('survey_parts')}
+        if 'llm_followups' not in cols:
+            statements.append(
+                'ALTER TABLE survey_parts ADD COLUMN llm_followups BOOLEAN NOT NULL DEFAULT FALSE'
+            )
+        if 'llm_question_count' not in cols:
+            statements.append(
+                'ALTER TABLE survey_parts ADD COLUMN llm_question_count INTEGER NOT NULL DEFAULT 3'
+            )
+        if 'llm_instructions' not in cols:
+            statements.append('ALTER TABLE survey_parts ADD COLUMN llm_instructions TEXT')
+        if 'link_url' not in cols:
+            statements.append('ALTER TABLE survey_parts ADD COLUMN link_url TEXT')
+        if 'is_link' not in cols:
+            statements.append(
+                'ALTER TABLE survey_parts ADD COLUMN is_link BOOLEAN NOT NULL DEFAULT FALSE'
+            )
+        if 'one_per_page' not in cols:
+            statements.append(
+                'ALTER TABLE survey_parts ADD COLUMN one_per_page BOOLEAN NOT NULL DEFAULT TRUE'
+            )
+    backfill_control_order = False
+    backfill_control_paging = False
+    if insp.has_table('survey_part_arms'):
+        cols = {c['name'] for c in insp.get_columns('survey_part_arms')}
+        if 'one_per_page' not in cols:
+            statements.append(
+                'ALTER TABLE survey_part_arms ADD COLUMN one_per_page BOOLEAN NOT NULL DEFAULT TRUE'
+            )
+            backfill_control_paging = True
+        if 'sort_order' not in cols:
+            statements.append(
+                'ALTER TABLE survey_part_arms ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0'
+            )
+            backfill_control_order = True
     for stmt in statements:
         try:
             with engine.begin() as conn:
                 conn.execute(text(stmt))
+        except (OperationalError, ProgrammingError):
+            pass
+    if backfill_control_order:
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    'UPDATE survey_part_arms AS membership '
+                    'SET sort_order = part.sort_order '
+                    'FROM survey_parts AS part '
+                    'WHERE membership.part_id = part.id'
+                ))
+        except (OperationalError, ProgrammingError):
+            pass
+    if backfill_control_paging:
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    'UPDATE survey_part_arms AS membership '
+                    'SET one_per_page = part.one_per_page '
+                    'FROM survey_parts AS part '
+                    'WHERE membership.part_id = part.id'
+                ))
         except (OperationalError, ProgrammingError):
             pass
 
@@ -231,6 +288,7 @@ def question_new_page(request: Request):
         None,
         _optional_query_int(request, 'return_survey_id'),
         _optional_query_int(request, 'return_bank_id'),
+        _optional_query_int(request, 'return_part_id'),
     )
 
 
@@ -249,7 +307,7 @@ def question_edit_page(question_id: int, request: Request):
     question_form(question, return_survey_id, return_bank_id)
 
 
-def question_form(question=None, return_survey_id=None, return_bank_id=None):
+def question_form(question=None, return_survey_id=None, return_bank_id=None, return_part_id=None):
     """Page 2 from mockups: Question New/Edit form"""
     is_edit = question is not None
     
@@ -260,11 +318,6 @@ def question_form(question=None, return_survey_id=None, return_bank_id=None):
         'type': question.question_type if is_edit else 'likert',
         'config': copy.deepcopy(question.config) if is_edit and getattr(question, 'config', None) else {},
     }
-    if is_edit and form_state['type'] == 'text':
-        _cfg = form_state['config']
-        if _cfg.get('adaptive') and not str(_cfg.get('prompt_text') or '').strip():
-            _cfg['prompt_text'] = DEFAULT_ADAPTIVE_PROMPT_TEXT
-
     with ui.column().classes('w-full max-w-2xl mx-auto p-8'):
         # Header
         ui.label('Edit Question' if is_edit else 'New Question').classes('text-3xl font-bold mb-6')
@@ -375,9 +428,6 @@ def question_form(question=None, return_survey_id=None, return_bank_id=None):
                     tcfg = form_state['config']['text']
                     tcfg.setdefault('placeholder', 'Enter your response...')
                     tcfg.setdefault('charLimit', 1000)
-                    form_state['config'].setdefault('adaptive', False)
-                    form_state['config'].setdefault('prompt_text', '')
-
                     ui.select(
                         [500, 1000, 1500, 2000],
                         label='Character Limit',
@@ -393,47 +443,10 @@ def question_form(question=None, return_survey_id=None, return_bank_id=None):
                         'change', lambda e: tcfg.update({'placeholder': e.value})
                     )
 
-            @ui.refreshable
-            def adaptive_followup_section():
-                if form_state['type'] != 'text':
-                    return
-                cfg = form_state.setdefault('config', {})
-                cfg.setdefault('adaptive', False)
-                cfg.setdefault('prompt_text', '')
-
-                ui.label('Adaptive follow-up').classes('text-lg font-semibold mt-4 mb-2')
-                ui.label(
-                    'When enabled, a substantive answer may trigger AI-generated follow-up questions after this item.'
-                ).classes('text-sm text-gray-600 mb-2')
-
-                ad_cb = ui.checkbox(
-                    'Enable adaptive (AI follow-up questions)',
-                    value=bool(cfg.get('adaptive')),
-                ).classes('w-full')
-
-                with ui.column().classes('w-full mt-2') as prompt_holder:
-                    ui.label('Optional: context / instructions for the AI (exported as prompt_text).').classes(
-                        'text-sm text-gray-600 mb-1'
-                    )
-                    ta = ui.textarea(value=str(cfg.get('prompt_text') or '')).classes('w-full')
-                    ta.on('blur', lambda: cfg.update({'prompt_text': str(ta.value or '').strip()}))
-
-                prompt_holder.set_visibility(bool(cfg.get('adaptive')))
-
-                def on_adaptive_change(e):
-                    cfg['adaptive'] = bool(e.value)
-                    if cfg['adaptive'] and not str(cfg.get('prompt_text') or '').strip():
-                        cfg['prompt_text'] = DEFAULT_ADAPTIVE_PROMPT_TEXT
-                    prompt_holder.set_visibility(cfg['adaptive'])
-                    adaptive_followup_section.refresh()
-
-                ad_cb.on('change', on_adaptive_change)
-
             def handle_type_change(e):
                 form_state['type'] = e.value
                 form_state['config'] = {}
                 config_section.refresh()
-                adaptive_followup_section.refresh()
 
             ui.select(
                 ['likert', 'boolean', 'text', 'multi'],
@@ -443,7 +456,6 @@ def question_form(question=None, return_survey_id=None, return_bank_id=None):
             ).classes('w-full')
 
             config_section()
-            adaptive_followup_section()
             
             # Save button
             with ui.row().classes('w-full justify-end gap-2 mt-6'):
@@ -458,6 +470,7 @@ def question_form(question=None, return_survey_id=None, return_bank_id=None):
                         question.id if is_edit else None,
                         return_survey_id,
                         return_bank_id,
+                        return_part_id,
                     ),
                 ).classes('bg-blue-600 text-white')
 
@@ -488,7 +501,7 @@ def remove_multi_option(form_state, idx, refresh_func):
         refresh_func.refresh()
 
 
-def save_question(form_state, question_id=None, return_survey_id=None, return_bank_id=None):
+def save_question(form_state, question_id=None, return_survey_id=None, return_bank_id=None, return_part_id=None):
     """Save question to database"""
     # Validation
     if not form_state['name'].strip():
@@ -501,18 +514,8 @@ def save_question(form_state, question_id=None, return_survey_id=None, return_ba
 
     raw_cfg = form_state['config']
     cfg = copy.deepcopy(raw_cfg) if isinstance(raw_cfg, dict) else {}
-    if form_state['type'] != 'text':
-        cfg.pop('adaptive', None)
-        cfg.pop('prompt_text', None)
-    else:
-        adaptive_on = bool(cfg.get('adaptive'))
-        cfg['adaptive'] = adaptive_on
-        if adaptive_on:
-            cfg['prompt_text'] = str(cfg.get('prompt_text') or '').strip()
-        else:
-            cfg.pop('prompt_text', None)
-
-    survey_link_adaptive = form_state['type'] == 'text' and bool(cfg.get('adaptive'))
+    cfg.pop('adaptive', None)
+    cfg.pop('prompt_text', None)
 
     session = Session()
 
@@ -525,7 +528,7 @@ def save_question(form_state, question_id=None, return_survey_id=None, return_ba
         question.config = cfg
         question.version += 1
         for sq in session.query(SurveyQuestion).filter_by(question_id=question_id).all():
-            sq.is_adaptive = survey_link_adaptive
+            sq.is_adaptive = False
         message = f'Question "{question.name}" updated'
     else:
         # Create new
@@ -541,11 +544,17 @@ def save_question(form_state, question_id=None, return_survey_id=None, return_ba
 
         # If called from survey edit, add to that survey at the end
         if return_survey_id:
+            part_id = None
+            if return_part_id:
+                part = session.get(SurveyPart, int(return_part_id))
+                if part is not None and part.survey_id == int(return_survey_id):
+                    part_id = part.id
             sq = SurveyQuestion(
                 survey_id=return_survey_id,
                 question_id=question.id,
                 order=_next_order_at_end(session, return_survey_id),
-                is_adaptive=survey_link_adaptive,
+                is_adaptive=False,
+                part_id=part_id,
             )
             session.add(sq)
         if return_bank_id:
@@ -673,6 +682,7 @@ def _open_import_survey_dialog() -> None:
 
 def import_survey_json_dict(data: dict) -> int:
     """Import a survey JSON dict as a new survey; return new internal survey id."""
+    from study_links import normalize_link_url, normalize_llm_question_count
     title = (data.get('title') or data.get('name') or 'Imported Survey').strip()
     description = (data.get('description') or '').strip()
     settings = data.get('settings') or {}
@@ -744,6 +754,12 @@ def import_survey_json_dict(data: dict) -> int:
                 survey_id=survey.id,
                 title=str(part['title']).strip(),
                 submit_label=(str(part.get('submitLabel') or 'Submit').strip() or 'Submit'),
+                llm_followups=bool(part.get('llmFollowups')),
+                llm_question_count=normalize_llm_question_count(part.get('llmQuestionCount')),
+                llm_instructions=(str(part.get('llmInstructions') or '').strip() or None),
+                link_url=normalize_link_url(part.get('linkUrl')) or None,
+                is_link=bool(part.get('isLink')) and not bool(part.get('llmFollowups')),
+                one_per_page=bool(part.get('onePerPage', True)),
                 sort_order=index,
             )
             session.add(copied)
@@ -752,10 +768,17 @@ def import_survey_json_dict(data: dict) -> int:
                 row = by_question_id.get(str(qid))
                 if row is not None:
                     row.part_id = copied.id
+            paging = part.get('armPaging') if isinstance(part.get('armPaging'), dict) else {}
+            page_fallback = bool(part.get('onePerPage', True))
             for key in part.get('armKeys') or []:
                 arm_id = arm_ids.get(str(key))
                 if arm_id is not None:
-                    session.add(SurveyPartArm(part_id=copied.id, arm_id=arm_id))
+                    session.add(SurveyPartArm(
+                        part_id=copied.id,
+                        arm_id=arm_id,
+                        sort_order=index,
+                        one_per_page=bool(paging.get(str(key), page_fallback)),
+                    ))
 
         session.commit()
         return survey.id
@@ -879,9 +902,9 @@ def survey_edit_form(survey=None):
             name_input = ui.input('Survey Name', value=survey.name if is_edit else '').classes('w-full')
             desc_input = ui.textarea('Description', value=survey.description if is_edit else '').classes('w-full')
             semester_input = ui.input(
-                'Semester',
+                'Period',
                 value=(survey.semester or '') if is_edit else '',
-                placeholder='2026-spring',
+                placeholder='Wave 1',
             ).classes('w-full max-w-md')
 
             ui.label('Participant landing page (before questions)').classes('text-lg font-semibold mt-6 mb-1')
@@ -937,92 +960,20 @@ def survey_edit_form(survey=None):
                         on_click=lambda: export_survey_template_json(survey_id),
                     ).classes('bg-slate-700 text-white')
         
-        # Questions section (only show if editing existing survey)
         if is_edit:
-            with ui.card().classes('w-full p-6'):
-                ui.label('Questions').classes('text-2xl font-bold mb-4')
-                
-                with ui.row().classes('gap-2 mb-4 flex-wrap'):
-                    ui.button('➕ New Question', on_click=lambda: ui.navigate.to(f'/admin/questions/new?return_survey_id={survey_id}')).classes(
-                        'bg-green-600 text-white'
-                    )
-                    ui.button('➕ Select Question', on_click=lambda: show_question_selector(survey_id)).classes(
-                        'bg-blue-600 text-white'
-                    )
-                    ui.button(
-                        'Import question bank',
-                        on_click=lambda: question_banks.import_bank_into_survey(survey_id),
-                    ).classes('bg-indigo-600 text-white')
-                
-                # Questions list
-                questions_list_display(survey_id)
             import study_admin
             study_admin.study_design_panel(survey_id)
         else:
-            staged_question_ids: list[int] = []
-
-            @ui.refreshable
-            def staged_questions_display():
-                session = Session()
-                try:
-                    by_id = {}
-                    if staged_question_ids:
-                        rows = session.query(QuestionBank).filter(QuestionBank.id.in_(staged_question_ids)).all()
-                        by_id = {row.id: row for row in rows}
-                finally:
-                    session.close()
-                if not staged_question_ids:
-                    ui.label(
-                        'No questions staged. Import a bank now, or add questions after the survey is created.'
-                    ).classes('text-gray-500')
-                    return
-                for index, qid in enumerate(list(staged_question_ids), 1):
-                    question = by_id.get(qid)
-                    label = question.name if question else f'Question {qid}'
-                    with ui.row().classes('w-full items-center justify-between'):
-                        ui.label(f'{index}. {label}')
-                        ui.button(
-                            icon='close',
-                            on_click=lambda question_id=qid: unstage_question(question_id),
-                        ).props('flat round dense color=red').tooltip('Remove from this new survey')
-
-            def unstage_question(question_id: int) -> None:
-                if question_id in staged_question_ids:
-                    staged_question_ids.remove(question_id)
-                staged_questions_display.refresh()
-
-            def stage_questions(question_ids: list[int]) -> None:
-                before = len(staged_question_ids)
-                skipped = 0
-                for question_id in question_ids:
-                    if question_id in staged_question_ids:
-                        skipped += 1
-                        continue
-                    staged_question_ids.append(question_id)
-                question_banks._notify_added(len(staged_question_ids) - before, skipped)
-                staged_questions_display.refresh()
-
-            with ui.card().classes('w-full p-6'):
-                ui.label('Questions').classes('text-2xl font-bold mb-2')
-                ui.label(
-                    'Import an entire question bank, or some of its questions. '
-                    'You can reorder them after the survey is created.'
-                ).classes('text-sm text-gray-600 mb-4')
-                ui.button(
-                    'Import question bank',
-                    on_click=lambda: question_banks.open_bank_picker(on_confirm=stage_questions),
-                ).classes('bg-indigo-600 text-white mb-4')
-                staged_questions_display()
-                ui.button('Create Survey', on_click=lambda: create_survey_initial(
-                    name_input.value,
-                    desc_input.value,
-                    randomize_enabled.value,
-                    landing_editor.value,
-                    opens_input.value,
-                    closes_input.value,
-                    list(staged_question_ids),
-                    semester_input.value,
-                )).classes('bg-blue-600 text-white mt-4')
+            ui.button('Create Survey', on_click=lambda: create_survey_initial(
+                name_input.value,
+                desc_input.value,
+                randomize_enabled.value,
+                landing_editor.value,
+                opens_input.value,
+                closes_input.value,
+                None,
+                semester_input.value,
+            )).classes('bg-blue-600 text-white mt-4')
 
 
 def export_survey_results_csv(survey_id: int) -> None:
@@ -1148,10 +1099,10 @@ def export_survey_results_csv(survey_id: int) -> None:
                     'sid': payload.get('sid') or r.sid or '',
                     'submittedAt': payload.get('submittedAt') or '',
                     'uuid': payload.get('id') or r.uuid or '',
-                    'semester': payload.get('semester') or '',
-                    'instructor': payload.get('instructor') or '',
-                    'course': payload.get('course') or '',
-                    'section': payload.get('section') or '',
+                    'period': payload.get('period') or payload.get('semester') or '',
+                    'group': payload.get('group') or payload.get('instructor') or '',
+                    'category': payload.get('category') or payload.get('course') or '',
+                    'code': payload.get('code') or payload.get('section') or '',
                     'arm': payload.get('armLabel') or payload.get('arm') or '',
                     'completed': payload.get('completed', ''),
                     'dynamic_questions': dyn_str,
@@ -1165,10 +1116,10 @@ def export_survey_results_csv(survey_id: int) -> None:
             'sid',
             'submittedAt',
             'uuid',
-            'semester',
-            'instructor',
-            'course',
-            'section',
+            'period',
+            'group',
+            'category',
+            'code',
             'arm',
             'completed',
         ]
@@ -1194,10 +1145,10 @@ def export_survey_results_csv(survey_id: int) -> None:
                 'sid': item.get('sid', ''),
                 'submittedAt': item.get('submittedAt', ''),
                 'uuid': item.get('uuid', ''),
-                'semester': item.get('semester', ''),
-                'instructor': item.get('instructor', ''),
-                'course': item.get('course', ''),
-                'section': item.get('section', ''),
+                'period': item.get('period', ''),
+                'group': item.get('group', ''),
+                'category': item.get('category', ''),
+                'code': item.get('code', ''),
                 'arm': item.get('arm', ''),
                 'completed': item.get('completed', ''),
             }
@@ -1688,8 +1639,8 @@ def admin_home():
                 ui.label('View response insights').classes('text-gray-600')
 
             with ui.card().classes('w-64 p-6 cursor-pointer hover:shadow-lg').on('click', lambda: ui.navigate.to('/admin/ir/links')):
-                ui.label('🔗 IR links').classes('text-2xl font-bold')
-                ui.label('Personalized student URLs (CSV)').classes('text-gray-600')
+                ui.label('🔗 Survey links').classes('text-2xl font-bold')
+                ui.label('Personal survey links (CSV)').classes('text-gray-600')
 
             if is_project_admin():
                 with ui.card().classes('w-64 p-6 cursor-pointer hover:shadow-lg').on(
@@ -1977,7 +1928,12 @@ def users_list_page_refreshable():
             {
                 'id': u.id,
                 'email': u.email,
-                'role': u.role,
+                'role': {
+                    'admin': 'Admin',
+                    'instructor': 'Editor',
+                    'ir': 'Link manager',
+                    'student': 'Respondent',
+                }.get(u.role, u.role),
                 'is_active': bool(u.is_active),
                 'last_login': u.last_login.strftime('%Y-%m-%d %H:%M') if u.last_login else '—',
                 'actions': u.id,
@@ -2119,7 +2075,12 @@ def admin_user_detail_page(user_id: int):
     current_active = bool(user.is_active)
     session.close()
 
-    roles = ['admin', 'instructor', 'ir', 'student']
+    roles = {
+        'admin': 'Admin',
+        'instructor': 'Editor',
+        'ir': 'Link manager',
+        'student': 'Respondent',
+    }
 
     with ui.column().classes('w-full max-w-lg mx-auto p-8 gap-4'):
         ui.label('Edit user').classes('text-3xl font-bold')
@@ -2167,7 +2128,7 @@ def ir_survey_links_page(request: Request):
 
     with ui.column().classes('w-full max-w-4xl mx-auto p-8 gap-4'):
         with ui.row().classes('w-full justify-between items-center flex-wrap gap-2'):
-            ui.label('IR: personalized survey links').classes('text-3xl font-bold')
+            ui.label('Survey links').classes('text-3xl font-bold')
             with ui.row().classes('gap-2'):
                 if is_admin():
                     ui.button('Admin panel', on_click=lambda: ui.navigate.to('/admin')).classes(
@@ -2195,7 +2156,7 @@ def ir_survey_links_page(request: Request):
         ui.label(
             'Each row in the spreadsheet lists whether the participant token is new or reused, the token, '
             'and the full URL. For the beta study, use Download study links instead. That file has one opaque URL '
-            'per student seat, with semester, instructor, course, section, and arm in the spreadsheet only.'
+            'per participant, with period, group, category, code, and arm in the spreadsheet only.'
         ).classes('text-gray-600 text-sm')
 
         if not surveys:

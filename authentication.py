@@ -167,7 +167,7 @@ def login_page(request: Request):
     with ui.column().classes('w-full h-screen bg-gray-100 flex items-center justify-center'):
         with ui.card().classes('w-full max-w-md p-4'):
             ui.label('Staff login').classes('text-3xl font-bold mb-6 text-center')
-            ui.label('For survey administrators and institutional research staff.').classes(
+            ui.label('For people who design surveys or issue links.').classes(
                 'text-sm text-gray-600 text-center mb-4'
             )
 
@@ -175,7 +175,7 @@ def login_page(request: Request):
                 with ui.card().classes('w-full bg-red-50 border border-red-300 p-4 mb-4'):
                     ui.label('Access denied').classes('text-red-700 font-bold')
                     ui.label(
-                        'This sign-in is for authorized staff only. If you are a student, use the personalized link from your institution.'
+                        'This sign-in is for survey staff only. If you were invited to answer a survey, use the personal link you were sent.'
                     ).classes('text-red-600 text-sm')
             elif error == 'oauth_failed':
                 with ui.card().classes('w-full bg-red-50 border border-red-300 p-4 mb-4'):
@@ -198,7 +198,7 @@ def login_page(request: Request):
             ui.separator().classes('my-4')
             ui.label('Or sign in with email').classes('text-sm text-gray-600 text-center')
             
-            email_input = ui.input('Email', placeholder='professor@university.edu').classes('w-full')
+            email_input = ui.input('Email', placeholder='name@example.com').classes('w-full')
             password_input = ui.input('Password', password=True, password_toggle_button=True).classes('w-full')
             error_label = ui.label('').classes('text-red-600 text-sm mt-2')
             error_label.visible = False
@@ -236,7 +236,7 @@ def register_page():
         with ui.card().classes('w-full max-w-md p-8'):
             ui.label('Create Account').classes('text-3xl font-bold mb-6 text-center')
             
-            email_input = ui.input('Email', placeholder='professor@university.edu').classes('w-full')
+            email_input = ui.input('Email', placeholder='name@example.com').classes('w-full')
             password_input = ui.input('Password', password=True, password_toggle_button=True).classes('w-full')
             password_confirm = ui.input('Confirm Password', password=True, password_toggle_button=True).classes('w-full')
             

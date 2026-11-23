@@ -142,6 +142,8 @@ def load_survey_from_db(session: Session, survey_id: int) -> dict[str, Any] | No
     )
     arm_key = {arm.id: arm.key for arm in arms}
     keys_by_part: dict[int, list[str]] = {part.id: [] for part in parts}
+    order_by_part: dict[int, dict[str, int]] = {part.id: {} for part in parts}
+    paging_by_part: dict[int, dict[str, bool]] = {part.id: {} for part in parts}
     if parts:
         for membership in session.query(SurveyPartArm).filter(
             SurveyPartArm.part_id.in_([part.id for part in parts])
@@ -149,6 +151,8 @@ def load_survey_from_db(session: Session, survey_id: int) -> dict[str, Any] | No
             key = arm_key.get(membership.arm_id)
             if key:
                 keys_by_part[membership.part_id].append(key)
+                order_by_part[membership.part_id][key] = int(membership.sort_order or 0)
+                paging_by_part[membership.part_id][key] = bool(membership.one_per_page)
     ids_by_part: dict[int, list[str]] = {part.id: [] for part in parts}
     for item in questions:
         part_id = item.get("partId")
@@ -173,8 +177,15 @@ def load_survey_from_db(session: Session, survey_id: int) -> dict[str, Any] | No
                 "id": part.id,
                 "title": part.title,
                 "submitLabel": part.submit_label or "Submit",
+                "llmFollowups": bool(part.llm_followups),
+                "llmQuestionCount": int(part.llm_question_count or 3),
+                "llmInstructions": part.llm_instructions or "",
+                "linkUrl": part.link_url or "",
+                "isLink": bool(part.is_link) and not part.llm_followups,
                 "questionIds": ids_by_part.get(part.id, []),
                 "armKeys": keys_by_part.get(part.id, []),
+                "armOrder": order_by_part.get(part.id, {}),
+                "armPaging": paging_by_part.get(part.id, {}),
             }
             for part in parts
         ],
