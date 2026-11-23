@@ -18,7 +18,21 @@ from sqlalchemy import create_engine, desc, func
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime
 from Base import Base
-from survey_models import Survey, QuestionBank, SurveyQuestion, generate_survey_public_id
+from question_library import (
+    append_collection_questions,
+    append_survey_questions,
+    create_question_from_item,
+    item_is_adaptive,
+)
+from survey_models import (
+    Survey,
+    QuestionBank,
+    SurveyArm,
+    SurveyPart,
+    SurveyPartArm,
+    SurveyQuestion,
+    generate_survey_public_id,
+)
 from user import User
 from survey_from_db import load_survey_from_db
 from chatbot import DEFAULT_ADAPTIVE_PROMPT_TEXT
@@ -44,6 +58,35 @@ Session = sessionmaker(bind=engine)
 
 # Create all tables
 Base.metadata.create_all(engine)
+
+
+def _ensure_study_schema() -> None:
+    """Add columns that create_all does not add to existing tables."""
+    from sqlalchemy import inspect, text
+    from sqlalchemy.exc import OperationalError, ProgrammingError
+
+    insp = inspect(engine)
+    statements = []
+    if insp.has_table('surveys'):
+        cols = {c['name'] for c in insp.get_columns('surveys')}
+        if 'semester' not in cols:
+            statements.append('ALTER TABLE surveys ADD COLUMN semester VARCHAR(64)')
+    if insp.has_table('survey_questions') and insp.has_table('survey_parts'):
+        cols = {c['name'] for c in insp.get_columns('survey_questions')}
+        if 'part_id' not in cols:
+            statements.append(
+                'ALTER TABLE survey_questions ADD COLUMN part_id INTEGER '
+                'REFERENCES survey_parts(id) ON DELETE SET NULL'
+            )
+    for stmt in statements:
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(stmt))
+        except (OperationalError, ProgrammingError):
+            pass
+
+
+_ensure_study_schema()
 
 
 def _fmt_datetime_local(dt) -> str:
@@ -114,9 +157,9 @@ def question_index_page():
     with ui.column().classes('w-full p-8'):
         # Header
         with ui.row().classes('w-full justify-between items-center mb-6'):
-            ui.label('Question Index').classes('text-3xl font-bold')
+            ui.label('All questions').classes('text-3xl font-bold')
             with ui.row().classes('gap-2'):
-                ui.button('← Back', on_click=lambda: ui.navigate.to('/admin')).classes('bg-gray-500 text-white')
+                ui.button('← Question banks', on_click=lambda: ui.navigate.to('/admin/questions')).classes('bg-gray-500 text-white')
                 ui.button('➕ New', on_click=lambda: ui.navigate.to('/admin/questions/new')).classes('bg-blue-600 text-white')
         
         # Questions table
@@ -168,33 +211,45 @@ def delete_question(question_id):
     question_index_page.refresh()
 
 
+def _optional_query_int(request: Request, name: str) -> int | None:
+    raw = (request.query_params.get(name) or '').strip()
+    return int(raw) if raw.isdigit() else None
+
+
+def _question_form_return_url(return_survey_id=None, return_bank_id=None) -> str:
+    if return_survey_id:
+        return f'/admin/surveys/edit/{return_survey_id}'
+    if return_bank_id:
+        return f'/admin/questions/banks/{return_bank_id}'
+    return '/admin/questions/all'
+
+
 @ui.page('/admin/questions/new')
 def question_new_page(request: Request):
     """Page 2 from mockups: Create new question"""
-    rid = (request.query_params.get('return_survey_id') or '').strip()
-    return_survey_id = int(rid) if rid.isdigit() else None
-    question_form(None, return_survey_id)
+    question_form(
+        None,
+        _optional_query_int(request, 'return_survey_id'),
+        _optional_query_int(request, 'return_bank_id'),
+    )
 
 
 @ui.page('/admin/questions/edit/{question_id}')
 def question_edit_page(question_id: int, request: Request):
     """Page 2 from mockups: Edit existing question"""
-    rid = (request.query_params.get('return_survey_id') or '').strip()
-    return_survey_id = int(rid) if rid.isdigit() else None
+    return_survey_id = _optional_query_int(request, 'return_survey_id')
+    return_bank_id = _optional_query_int(request, 'return_bank_id')
     session = Session()
     question = session.query(QuestionBank).filter_by(id=question_id).first()
     session.close()
     if not question:
         ui.notify('Question not found', type='negative')
-        if return_survey_id:
-            ui.navigate.to(f'/admin/surveys/edit/{return_survey_id}')
-        else:
-            ui.navigate.to('/admin/questions')
+        ui.navigate.to(_question_form_return_url(return_survey_id, return_bank_id))
         return
-    question_form(question, return_survey_id)
+    question_form(question, return_survey_id, return_bank_id)
 
 
-def question_form(question=None, return_survey_id=None):
+def question_form(question=None, return_survey_id=None, return_bank_id=None):
     """Page 2 from mockups: Question New/Edit form"""
     is_edit = question is not None
     
@@ -392,11 +447,18 @@ def question_form(question=None, return_survey_id=None):
             
             # Save button
             with ui.row().classes('w-full justify-end gap-2 mt-6'):
-                cancel_url = f'/admin/surveys/edit/{return_survey_id}' if return_survey_id else '/admin/questions'
-                ui.button('Cancel', on_click=lambda: ui.navigate.to(cancel_url)).classes('bg-gray-500 text-white')
+                ui.button(
+                    'Cancel',
+                    on_click=lambda: ui.navigate.to(_question_form_return_url(return_survey_id, return_bank_id)),
+                ).classes('bg-gray-500 text-white')
                 ui.button(
                     'Update' if is_edit else 'Create',
-                    on_click=lambda: save_question(form_state, question.id if is_edit else None, return_survey_id)
+                    on_click=lambda: save_question(
+                        form_state,
+                        question.id if is_edit else None,
+                        return_survey_id,
+                        return_bank_id,
+                    ),
                 ).classes('bg-blue-600 text-white')
 
 
@@ -426,7 +488,7 @@ def remove_multi_option(form_state, idx, refresh_func):
         refresh_func.refresh()
 
 
-def save_question(form_state, question_id=None, return_survey_id=None):
+def save_question(form_state, question_id=None, return_survey_id=None, return_bank_id=None):
     """Save question to database"""
     # Validation
     if not form_state['name'].strip():
@@ -477,16 +539,17 @@ def save_question(form_state, question_id=None, return_survey_id=None):
         session.add(question)
         session.flush()  # Get the ID
 
-        # If called from survey edit, add to that survey
+        # If called from survey edit, add to that survey at the end
         if return_survey_id:
-            max_order = session.query(SurveyQuestion).filter_by(survey_id=return_survey_id).count()
             sq = SurveyQuestion(
                 survey_id=return_survey_id,
                 question_id=question.id,
-                order=max_order + 1,
+                order=_next_order_at_end(session, return_survey_id),
                 is_adaptive=survey_link_adaptive,
             )
             session.add(sq)
+        if return_bank_id:
+            append_collection_questions(session, return_bank_id, [question.id])
         
         message = f'Question "{form_state["name"]}" created'
     
@@ -495,10 +558,7 @@ def save_question(form_state, question_id=None, return_survey_id=None):
     
     ui.notify(message, type='positive')
     
-    if return_survey_id:
-        ui.navigate.to(f'/admin/surveys/edit/{return_survey_id}')
-    else:
-        ui.navigate.to('/admin/questions')
+    ui.navigate.to(_question_form_return_url(return_survey_id, return_bank_id))
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -641,50 +701,61 @@ def import_survey_json_dict(data: dict) -> int:
             is_active=True,
             public_id=pid,
             created_by=get_current_user_id(),
+            semester=(str(data.get('semester') or '').strip() or None),
         )
         session.add(survey)
         session.flush()  # get survey.id
 
+        by_question_id: dict[str, SurveyQuestion] = {}
         for seq, q in enumerate(q_items, 1):
-            qtype = str(q.get('type') or q.get('question_type') or 'text').strip()
-            prompt = str(q.get('prompt') or q.get('question_text') or '').strip()
-            qid = str(q.get('id') or q.get('name') or f'q_{seq}').strip()
-            order_val = int(q.get('order') or seq)
-
-            cfg: dict = {}
-            if isinstance(q.get('tags'), list):
-                cfg['tags'] = list(q.get('tags'))
-            if qtype == 'likert':
-                cfg['scale'] = q.get('scale') or {}
-            elif qtype == 'boolean':
-                cfg['options'] = q.get('options') or {}
-            elif qtype == 'text':
-                cfg['text'] = q.get('text') or {}
-                if bool(q.get('adaptive') or q.get('is_adaptive')):
-                    cfg['adaptive'] = True
-                    cfg['prompt_text'] = str(q.get('prompt_text') or '').strip()
-            elif qtype == 'multi':
-                cfg['options'] = q.get('options') or []
-
-            qb = QuestionBank(
-                name=qid,
-                question_text=prompt or qid,
-                question_type=qtype,
-                version=int(q.get('version') or 1),
-                created_by=get_current_user_id(),
-                config=cfg,
+            qb = create_question_from_item(session, q, seq, get_current_user_id())
+            row = SurveyQuestion(
+                survey_id=survey.id,
+                question_id=qb.id,
+                order=seq,
+                is_adaptive=item_is_adaptive(q),
             )
-            session.add(qb)
+            session.add(row)
             session.flush()
+            if q.get('id'):
+                by_question_id[str(q['id'])] = row
 
-            session.add(
-                SurveyQuestion(
-                    survey_id=survey.id,
-                    question_id=qb.id,
-                    order=order_val,
-                    is_adaptive=bool(q.get('adaptive') or q.get('is_adaptive') or False),
-                )
+        arm_ids: dict[str, int] = {}
+        for index, arm in enumerate(data.get('arms') or [], 1):
+            if not isinstance(arm, dict) or not str(arm.get('key') or '').strip():
+                continue
+            key = str(arm['key']).strip()
+            copied = SurveyArm(
+                survey_id=survey.id,
+                key=key,
+                label=(str(arm.get('label') or key).strip() or key),
+                llm_followups=bool(arm.get('llmFollowups')),
+                external_note_html=(str(arm.get('externalNoteHtml') or '').strip() or None),
+                sort_order=index,
             )
+            session.add(copied)
+            session.flush()
+            arm_ids[key] = copied.id
+
+        for index, part in enumerate(data.get('parts') or [], 1):
+            if not isinstance(part, dict) or not str(part.get('title') or '').strip():
+                continue
+            copied = SurveyPart(
+                survey_id=survey.id,
+                title=str(part['title']).strip(),
+                submit_label=(str(part.get('submitLabel') or 'Submit').strip() or 'Submit'),
+                sort_order=index,
+            )
+            session.add(copied)
+            session.flush()
+            for qid in part.get('questionIds') or []:
+                row = by_question_id.get(str(qid))
+                if row is not None:
+                    row.part_id = copied.id
+            for key in part.get('armKeys') or []:
+                arm_id = arm_ids.get(str(key))
+                if arm_id is not None:
+                    session.add(SurveyPartArm(part_id=copied.id, arm_id=arm_id))
 
         session.commit()
         return survey.id
@@ -727,23 +798,27 @@ def copy_survey(survey_id: int) -> None:
             is_active=bool(src.is_active),
             public_id=pid,
             created_by=get_current_user_id(),
+            semester=src.semester,
         )
         session.add(copied)
         session.flush()
+        from study_links import clone_study_structure
+        part_map = clone_study_structure(session, src.id, copied.id)
 
         src_qs = (
             session.query(SurveyQuestion)
             .filter_by(survey_id=src.id)
-            .order_by(SurveyQuestion.order)
+            .order_by(SurveyQuestion.order, SurveyQuestion.id)
             .all()
         )
-        for sq in src_qs:
+        for position, sq in enumerate(src_qs, 1):
             session.add(
                 SurveyQuestion(
                     survey_id=copied.id,
                     question_id=sq.question_id,
-                    order=sq.order,
+                    order=position,
                     is_adaptive=bool(sq.is_adaptive),
+                    part_id=part_map.get(sq.part_id),
                 )
             )
 
@@ -803,6 +878,11 @@ def survey_edit_form(survey=None):
         with ui.card().classes('w-full p-6 mb-4'):
             name_input = ui.input('Survey Name', value=survey.name if is_edit else '').classes('w-full')
             desc_input = ui.textarea('Description', value=survey.description if is_edit else '').classes('w-full')
+            semester_input = ui.input(
+                'Semester',
+                value=(survey.semester or '') if is_edit else '',
+                placeholder='2026-spring',
+            ).classes('w-full max-w-md')
 
             ui.label('Participant landing page (before questions)').classes('text-lg font-semibold mt-6 mb-1')
             ui.label(
@@ -840,17 +920,7 @@ def survey_edit_form(survey=None):
             
             ui.label('Questions with "IMI" tag will be shuffled randomly').classes('text-sm text-gray-500')
             
-            if not is_edit:
-                # Save survey first before adding questions
-                ui.button('Create Survey', on_click=lambda: create_survey_initial(
-                    name_input.value,
-                    desc_input.value,
-                    randomize_enabled.value,
-                    landing_editor.value,
-                    opens_input.value,
-                    closes_input.value,
-                )).classes('bg-blue-600 text-white mt-4')
-            else:
+            if is_edit:
                 with ui.row().classes('gap-2 items-center mt-4 flex-wrap'):
                     ui.button('Update Details', on_click=lambda: update_survey_details(
                         survey_id,
@@ -860,6 +930,7 @@ def survey_edit_form(survey=None):
                         landing_editor.value,
                         opens_input.value,
                         closes_input.value,
+                        semester_input.value,
                     )).classes('bg-blue-600 text-white')
                     ui.button(
                         'Export survey (JSON)',
@@ -871,16 +942,87 @@ def survey_edit_form(survey=None):
             with ui.card().classes('w-full p-6'):
                 ui.label('Questions').classes('text-2xl font-bold mb-4')
                 
-                with ui.row().classes('gap-2 mb-4'):
+                with ui.row().classes('gap-2 mb-4 flex-wrap'):
                     ui.button('➕ New Question', on_click=lambda: ui.navigate.to(f'/admin/questions/new?return_survey_id={survey_id}')).classes(
                         'bg-green-600 text-white'
                     )
                     ui.button('➕ Select Question', on_click=lambda: show_question_selector(survey_id)).classes(
                         'bg-blue-600 text-white'
                     )
+                    ui.button(
+                        'Import question bank',
+                        on_click=lambda: question_banks.import_bank_into_survey(survey_id),
+                    ).classes('bg-indigo-600 text-white')
                 
                 # Questions list
                 questions_list_display(survey_id)
+            import study_admin
+            study_admin.study_design_panel(survey_id)
+        else:
+            staged_question_ids: list[int] = []
+
+            @ui.refreshable
+            def staged_questions_display():
+                session = Session()
+                try:
+                    by_id = {}
+                    if staged_question_ids:
+                        rows = session.query(QuestionBank).filter(QuestionBank.id.in_(staged_question_ids)).all()
+                        by_id = {row.id: row for row in rows}
+                finally:
+                    session.close()
+                if not staged_question_ids:
+                    ui.label(
+                        'No questions staged. Import a bank now, or add questions after the survey is created.'
+                    ).classes('text-gray-500')
+                    return
+                for index, qid in enumerate(list(staged_question_ids), 1):
+                    question = by_id.get(qid)
+                    label = question.name if question else f'Question {qid}'
+                    with ui.row().classes('w-full items-center justify-between'):
+                        ui.label(f'{index}. {label}')
+                        ui.button(
+                            icon='close',
+                            on_click=lambda question_id=qid: unstage_question(question_id),
+                        ).props('flat round dense color=red').tooltip('Remove from this new survey')
+
+            def unstage_question(question_id: int) -> None:
+                if question_id in staged_question_ids:
+                    staged_question_ids.remove(question_id)
+                staged_questions_display.refresh()
+
+            def stage_questions(question_ids: list[int]) -> None:
+                before = len(staged_question_ids)
+                skipped = 0
+                for question_id in question_ids:
+                    if question_id in staged_question_ids:
+                        skipped += 1
+                        continue
+                    staged_question_ids.append(question_id)
+                question_banks._notify_added(len(staged_question_ids) - before, skipped)
+                staged_questions_display.refresh()
+
+            with ui.card().classes('w-full p-6'):
+                ui.label('Questions').classes('text-2xl font-bold mb-2')
+                ui.label(
+                    'Import an entire question bank, or some of its questions. '
+                    'You can reorder them after the survey is created.'
+                ).classes('text-sm text-gray-600 mb-4')
+                ui.button(
+                    'Import question bank',
+                    on_click=lambda: question_banks.open_bank_picker(on_confirm=stage_questions),
+                ).classes('bg-indigo-600 text-white mb-4')
+                staged_questions_display()
+                ui.button('Create Survey', on_click=lambda: create_survey_initial(
+                    name_input.value,
+                    desc_input.value,
+                    randomize_enabled.value,
+                    landing_editor.value,
+                    opens_input.value,
+                    closes_input.value,
+                    list(staged_question_ids),
+                    semester_input.value,
+                )).classes('bg-blue-600 text-white mt-4')
 
 
 def export_survey_results_csv(survey_id: int) -> None:
@@ -898,7 +1040,7 @@ def export_survey_results_csv(survey_id: int) -> None:
             sess.query(SurveyQuestion)
             .options(joinedload(SurveyQuestion.question))
             .filter_by(survey_id=int(survey_id))
-            .order_by(SurveyQuestion.order)
+            .order_by(SurveyQuestion.order, SurveyQuestion.id)
             .all()
         )
         static_ordered_ids: list[str] = []
@@ -1006,6 +1148,12 @@ def export_survey_results_csv(survey_id: int) -> None:
                     'sid': payload.get('sid') or r.sid or '',
                     'submittedAt': payload.get('submittedAt') or '',
                     'uuid': payload.get('id') or r.uuid or '',
+                    'semester': payload.get('semester') or '',
+                    'instructor': payload.get('instructor') or '',
+                    'course': payload.get('course') or '',
+                    'section': payload.get('section') or '',
+                    'arm': payload.get('armLabel') or payload.get('arm') or '',
+                    'completed': payload.get('completed', ''),
                     'dynamic_questions': dyn_str,
                     **ans_map,
                 }
@@ -1013,7 +1161,17 @@ def export_survey_results_csv(survey_id: int) -> None:
 
         ordered_qids = [qid for qid in static_ordered_ids if qid in qids]
 
-        headers: list[str] = ['sid', 'submittedAt', 'uuid']
+        headers: list[str] = [
+            'sid',
+            'submittedAt',
+            'uuid',
+            'semester',
+            'instructor',
+            'course',
+            'section',
+            'arm',
+            'completed',
+        ]
         qid_to_header: dict[str, str] = {}
         for qid in ordered_qids:
             prompt = id_to_prompt.get(qid)
@@ -1036,6 +1194,12 @@ def export_survey_results_csv(survey_id: int) -> None:
                 'sid': item.get('sid', ''),
                 'submittedAt': item.get('submittedAt', ''),
                 'uuid': item.get('uuid', ''),
+                'semester': item.get('semester', ''),
+                'instructor': item.get('instructor', ''),
+                'course': item.get('course', ''),
+                'section': item.get('section', ''),
+                'arm': item.get('arm', ''),
+                'completed': item.get('completed', ''),
             }
             for qid in ordered_qids:
                 out[qid_to_header[qid]] = item.get(qid, '')
@@ -1048,45 +1212,170 @@ def export_survey_results_csv(survey_id: int) -> None:
         sess.close()
 
 
+def _ordered_survey_questions(session, survey_id: int) -> list[SurveyQuestion]:
+    return (
+        session.query(SurveyQuestion)
+        .filter_by(survey_id=survey_id)
+        .order_by(SurveyQuestion.order.asc(), SurveyQuestion.id.asc())
+        .all()
+    )
+
+
+def _assign_contiguous_orders(session, rows: list[SurveyQuestion]) -> None:
+    """Write positions 1..n. Negative placeholders avoid colliding with existing values mid-update."""
+    for i, row in enumerate(rows):
+        row.order = -(i + 1)
+    session.flush()
+    for i, row in enumerate(rows, 1):
+        row.order = i
+
+
+def _reindex_survey_questions(session, survey_id: int) -> list[SurveyQuestion]:
+    rows = _ordered_survey_questions(session, survey_id)
+    expected = list(range(1, len(rows) + 1))
+    if [row.order for row in rows] != expected:
+        _assign_contiguous_orders(session, rows)
+    return rows
+
+
+def _next_order_at_end(session, survey_id: int) -> int:
+    rows = _reindex_survey_questions(session, survey_id)
+    return len(rows) + 1
+
+
+def _placement_index(current: int, remaining_ids: list[int], destination) -> int:
+    """Index in the list with the moving question already removed."""
+    n = len(remaining_ids)
+    if destination == 'start':
+        return 0
+    if destination == 'end':
+        return n
+    if destination == 'up':
+        return max(0, current - 1)
+    if destination == 'down':
+        return min(n, current + 1)
+    if isinstance(destination, tuple) and destination and destination[0] == 'after':
+        try:
+            return remaining_ids.index(destination[1]) + 1
+        except ValueError:
+            return n
+    return min(max(current, 0), n)
+
+
+def _move_icon(icon: str, tooltip: str, enabled: bool, handler) -> None:
+    button = ui.button(icon=icon, on_click=handler).props('flat round dense')
+    if not enabled:
+        button.props('disable')
+    button.tooltip(tooltip)
+
+
 @ui.refreshable
 def questions_list_display(survey_id):
     """Display list of questions in a survey"""
     session = Session()
-    survey_questions = session.query(SurveyQuestion).filter_by(survey_id=survey_id).order_by(SurveyQuestion.order).all()
-    
-    # Eagerly load the question data before closing session
-    questions_data = []
-    for sq in survey_questions:
-        questions_data.append({
-            'id': sq.id,
-            'question_bank_id': sq.question_id,
-            'order': sq.order,
-            'name': sq.question.name,
-            'text': sq.question.question_text,
-        })
-    
-    session.close()
-    
+    try:
+        survey_questions = _reindex_survey_questions(session, survey_id)
+        parts = (
+            session.query(SurveyPart)
+            .filter_by(survey_id=survey_id)
+            .order_by(SurveyPart.sort_order, SurveyPart.id)
+            .all()
+        )
+        part_options = {'none': 'Not in a part'}
+        for part in parts:
+            part_options[str(part.id)] = part.title
+        session.commit()
+
+        # Eagerly load the question data before closing session
+        questions_data = []
+        for sq in survey_questions:
+            questions_data.append({
+                'id': sq.id,
+                'question_bank_id': sq.question_id,
+                'order': sq.order,
+                'part_id': sq.part_id,
+                'name': sq.question.name,
+                'text': sq.question.question_text,
+            })
+    finally:
+        session.close()
+
     if questions_data:
-        for q_data in questions_data:
+        last_index = len(questions_data) - 1
+        for index, q_data in enumerate(questions_data):
             with ui.card().classes('w-full p-4 mb-2'):
-                with ui.row().classes('w-full justify-between items-center'):
-                    with ui.column():
+                with ui.row().classes('w-full justify-between items-center gap-3'):
+                    with ui.column().classes('flex-1 min-w-0'):
                         ui.label(f'{q_data["order"]}. {q_data["name"]}').classes('font-semibold')
                         ui.label(q_data["text"][:80] + '...' if len(q_data["text"]) > 80 else q_data["text"]).classes('text-sm text-gray-600')
-                    with ui.row().classes('gap-2 items-center'):
+                        if len(part_options) > 1:
+                            ui.select(
+                                part_options,
+                                value=str(q_data['part_id']) if q_data.get('part_id') else 'none',
+                                label='Part',
+                                on_change=lambda e, sq_id=q_data['id']: set_question_part(sq_id, e.value),
+                            ).classes('w-full max-w-xs mt-1')
+                    with ui.row().classes('gap-1 items-center flex-wrap justify-end'):
                         ui.button(
                             'Edit',
                             on_click=lambda qb_id=q_data['question_bank_id'], sid=survey_id: ui.navigate.to(
                                 f'/admin/questions/edit/{qb_id}?return_survey_id={sid}'
                             ),
                         ).props('flat dense no-caps').classes('text-blue-700')
-                        # Capture sq.id in default argument to avoid closure issue
-                        ui.button(icon='arrow_upward', on_click=lambda sq_id=q_data['id']: move_question_up(sq_id)).props('flat round dense')
-                        ui.button(icon='arrow_downward', on_click=lambda sq_id=q_data['id']: move_question_down(sq_id)).props('flat round dense')
+                        # Capture ids in default arguments to avoid closure issues
+                        _move_icon(
+                            'vertical_align_top',
+                            'Move to beginning',
+                            index > 0,
+                            lambda sq_id=q_data['id']: move_survey_question(sq_id, 'start'),
+                        )
+                        _move_icon(
+                            'arrow_upward',
+                            'Move up',
+                            index > 0,
+                            lambda sq_id=q_data['id']: move_survey_question(sq_id, 'up'),
+                        )
+                        _move_icon(
+                            'arrow_downward',
+                            'Move down',
+                            index < last_index,
+                            lambda sq_id=q_data['id']: move_survey_question(sq_id, 'down'),
+                        )
+                        _move_icon(
+                            'vertical_align_bottom',
+                            'Move to end',
+                            index < last_index,
+                            lambda sq_id=q_data['id']: move_survey_question(sq_id, 'end'),
+                        )
+                        ui.button(
+                            'Place…',
+                            on_click=lambda sq_id=q_data['id']: show_move_question_dialog(sq_id),
+                        ).props('flat dense no-caps').tooltip('Place after another question')
                         ui.button(icon='delete', on_click=lambda sq_id=q_data['id']: remove_question_from_survey(sq_id)).props('flat round dense color=red')
     else:
         ui.label('No questions added yet.').classes('text-gray-500')
+
+
+def set_question_part(sq_id: int, part_value) -> None:
+    """Assign a survey question to a part. ``none`` clears the assignment."""
+    session = Session()
+    try:
+        row = session.get(SurveyQuestion, int(sq_id))
+        if row is None:
+            return
+        new_part = None
+        if part_value not in (None, '', 'none'):
+            try:
+                new_part = int(part_value)
+            except (TypeError, ValueError):
+                return
+        if row.part_id == new_part:
+            return
+        row.part_id = new_part
+        session.commit()
+    finally:
+        session.close()
+    ui.notify('Part updated', type='positive')
 
 
 def _normalize_landing_html(html: str | None) -> str | None:
@@ -1104,6 +1393,8 @@ def create_survey_initial(
     participant_landing_html=None,
     opens_at_raw=None,
     closes_at_raw=None,
+    question_ids=None,
+    semester=None,
 ):
     """Create initial survey"""
     if not name.strip():
@@ -1138,13 +1429,18 @@ def create_survey_initial(
         closes_at=c,
         public_id=pid,
         created_by=get_current_user_id(),  # Set owner
+        semester=(semester or '').strip() or None,
     )
     session.add(survey)
+    session.flush()
+    if question_ids:
+        append_survey_questions(session, survey.id, list(question_ids))
     session.commit()
     survey_id = survey.id
     session.close()
     
-    ui.notify(f'Survey "{name}" created!', type='positive')
+    extra = f' with {len(question_ids)} questions' if question_ids else ''
+    ui.notify(f'Survey "{name}" created{extra}!', type='positive')
     ui.navigate.to(f'/admin/surveys/edit/{survey_id}')
 
 
@@ -1156,6 +1452,7 @@ def update_survey_details(
     participant_landing_html=None,
     opens_at_raw=None,
     closes_at_raw=None,
+    semester=None,
 ):
     """Update survey metadata"""
     o = _parse_datetime_local(opens_at_raw)
@@ -1176,6 +1473,7 @@ def update_survey_details(
     survey.participant_landing_html = _normalize_landing_html(participant_landing_html)
     survey.opens_at = o
     survey.closes_at = c
+    survey.semester = (semester or '').strip() or None
 
     settings = survey.settings or {}
     if randomize:
@@ -1230,13 +1528,10 @@ def add_question_to_survey(survey_id, question_id):
         ui.notify('Question already in survey', type='warning')
         return
     
-    # Get current max order
-    max_order = session.query(SurveyQuestion).filter_by(survey_id=survey_id).count()
-    
     sq = SurveyQuestion(
         survey_id=survey_id,
         question_id=question_id,
-        order=max_order + 1
+        order=_next_order_at_end(session, survey_id),
     )
     session.add(sq)
     session.commit()
@@ -1246,63 +1541,112 @@ def add_question_to_survey(survey_id, question_id):
     questions_list_display.refresh()
 
 
-def move_question_up(sq_id):
-    """Move question up in order"""
+def move_survey_question(sq_id, destination) -> None:
+    """Move a survey question by list position, then store orders as 1..n."""
     session = Session()
-    sq = session.query(SurveyQuestion).filter_by(id=sq_id).first()
-    if sq.order > 1:
-        # Swap with previous
-        prev_sq = session.query(SurveyQuestion).filter_by(
-            survey_id=sq.survey_id,
-            order=sq.order - 1
-        ).first()
-        if prev_sq:
-            sq.order, prev_sq.order = prev_sq.order, sq.order
-            session.commit()
-    session.close()
+    try:
+        sq = session.query(SurveyQuestion).filter_by(id=sq_id).first()
+        if not sq:
+            ui.notify('Question not found', type='warning')
+            return
+        rows = _ordered_survey_questions(session, sq.survey_id)
+        ids = [row.id for row in rows]
+        if sq_id not in ids:
+            return
+        current = ids.index(sq_id)
+        remaining_ids = [row_id for row_id in ids if row_id != sq_id]
+        index = _placement_index(current, remaining_ids, destination)
+        remaining_ids.insert(index, sq_id)
+        by_id = {row.id: row for row in rows}
+        _assign_contiguous_orders(session, [by_id[row_id] for row_id in remaining_ids])
+        session.commit()
+    finally:
+        session.close()
     questions_list_display.refresh()
 
 
-def move_question_down(sq_id):
-    """Move question down in order"""
+def show_move_question_dialog(sq_id: int) -> None:
+    """Place a question at the beginning, at the end, or after another question."""
+    from sqlalchemy.orm import joinedload
+
     session = Session()
-    sq = session.query(SurveyQuestion).filter_by(id=sq_id).first()
-    max_order = session.query(SurveyQuestion).filter_by(survey_id=sq.survey_id).count()
-    if sq.order < max_order:
-        # Swap with next
-        next_sq = session.query(SurveyQuestion).filter_by(
-            survey_id=sq.survey_id,
-            order=sq.order + 1
-        ).first()
-        if next_sq:
-            sq.order, next_sq.order = next_sq.order, sq.order
-            session.commit()
+    sq = (
+        session.query(SurveyQuestion)
+        .options(joinedload(SurveyQuestion.question))
+        .filter_by(id=sq_id)
+        .first()
+    )
+    if not sq:
+        session.close()
+        ui.notify('Question not found', type='warning')
+        return
+    rows = (
+        session.query(SurveyQuestion)
+        .options(joinedload(SurveyQuestion.question))
+        .filter_by(survey_id=sq.survey_id)
+        .order_by(SurveyQuestion.order.asc(), SurveyQuestion.id.asc())
+        .all()
+    )
+    items = [
+        {
+            'id': row.id,
+            'name': row.question.name if row.question else 'Question',
+            'order': row.order,
+        }
+        for row in rows
+    ]
     session.close()
-    questions_list_display.refresh()
+
+    current = next(item for item in items if item['id'] == sq_id)
+    options: dict[str, str] = {'start': 'At the beginning'}
+    previous_id = None
+    passed_current = False
+    for item in items:
+        if item['id'] == sq_id:
+            passed_current = True
+            continue
+        options[f'after:{item["id"]}'] = f'After {item["order"]}. {item["name"]}'
+        if not passed_current:
+            previous_id = item['id']
+    options['end'] = 'At the end'
+    default = 'start' if previous_id is None else f'after:{previous_id}'
+
+    with ui.dialog() as dialog, ui.card().classes('w-full max-w-lg p-4'):
+        ui.label('Move question').classes('text-xl font-bold')
+        ui.label(f'{current["order"]}. {current["name"]}').classes('text-gray-600 mb-2')
+        ui.label('Choose where this question should sit in the survey.').classes('text-sm text-gray-500 mb-2')
+        place = ui.select(options, value=default, label='Place').classes('w-full')
+
+        def apply() -> None:
+            choice = place.value or default
+            dialog.close()
+            if choice == 'start':
+                move_survey_question(sq_id, 'start')
+            elif choice == 'end':
+                move_survey_question(sq_id, 'end')
+            elif str(choice).startswith('after:'):
+                move_survey_question(sq_id, ('after', int(str(choice).split(':', 1)[1])))
+            ui.notify('Question moved', type='positive')
+
+        with ui.row().classes('justify-end w-full mt-4 gap-2'):
+            ui.button('Cancel', on_click=dialog.close).props('flat')
+            ui.button('Move', on_click=apply).classes('bg-blue-600 text-white')
+    dialog.open()
 
 
 def remove_question_from_survey(sq_id):
-    """Remove question from survey"""
+    """Remove question from survey and close the gap in positions."""
     session = Session()
-    sq = session.query(SurveyQuestion).filter_by(id=sq_id).first()
-    if sq:
-        survey_id = sq.survey_id
-        deleted_order = sq.order
-        
-        session.delete(sq)
-        session.flush()  # Delete first
-        
-        # Reorder remaining questions that came after the deleted one
-        remaining = session.query(SurveyQuestion).filter(
-            SurveyQuestion.survey_id == survey_id,
-            SurveyQuestion.order > deleted_order
-        ).all()
-        
-        for rsq in remaining:
-            rsq.order -= 1
-        
-        session.commit()
-    session.close()
+    try:
+        sq = session.query(SurveyQuestion).filter_by(id=sq_id).first()
+        if sq:
+            survey_id = sq.survey_id
+            session.delete(sq)
+            session.flush()
+            _assign_contiguous_orders(session, _ordered_survey_questions(session, survey_id))
+            session.commit()
+    finally:
+        session.close()
     ui.notify('Question removed', type='positive')
     questions_list_display.refresh()
 
@@ -1336,8 +1680,8 @@ def admin_home():
                 ui.label('Manage survey pages').classes('text-gray-600')
 
             with ui.card().classes('w-64 p-6 cursor-pointer hover:shadow-lg').on('click', lambda: ui.navigate.to('/admin/questions')):
-                ui.label('❓ Questions').classes('text-2xl font-bold')
-                ui.label('Manage question bank').classes('text-gray-600')
+                ui.label('❓ Question banks').classes('text-2xl font-bold')
+                ui.label('Group questions and reuse them in surveys').classes('text-gray-600')
 
             with ui.card().classes('w-64 p-6 cursor-pointer hover:shadow-lg').on('click', lambda: ui.navigate.to('/admin/analytics')):
                 ui.label('📊 Analytics').classes('text-2xl font-bold')
@@ -1357,7 +1701,16 @@ def admin_home():
 
 @ui.page('/admin/questions')
 def admin_questions():
-    """Questions index page"""
+    """Named question banks"""
+    if not is_admin():
+        ui.navigate.to('/login?error=admin_only')
+        return
+    question_banks.banks_index_page()
+
+
+@ui.page('/admin/questions/all')
+def admin_all_questions():
+    """Every reusable question, whether or not it sits in a named bank."""
     if not is_admin():
         ui.navigate.to('/login?error=admin_only')
         return
@@ -1469,7 +1822,7 @@ def survey_detail_page(survey_id: int):
         session.query(SurveyQuestion)
         .options(joinedload(SurveyQuestion.question))
         .filter_by(survey_id=survey_id)
-        .order_by(SurveyQuestion.order)
+        .order_by(SurveyQuestion.order, SurveyQuestion.id)
         .all()
     )
     
@@ -1841,7 +2194,8 @@ def ir_survey_links_page(request: Request):
 
         ui.label(
             'Each row in the spreadsheet lists whether the participant token is new or reused, the token, '
-            'and the full URL. Send only the URL column to students as instructed by your protocol.'
+            'and the full URL. For the beta study, use Download study links instead. That file has one opaque URL '
+            'per student seat, with semester, instructor, course, section, and arm in the spreadsheet only.'
         ).classes('text-gray-600 text-sm')
 
         if not surveys:
@@ -1906,7 +2260,18 @@ def ir_survey_links_page(request: Request):
             safe_stub = survey_public_id.replace('/', '_').replace('+', '-')[:48]
             ui.download(buf.getvalue().encode('utf-8'), f'sai_survey_{safe_stub}_links.csv')
 
+        def download_study_links() -> None:
+            label = survey_select.value or ''
+            try:
+                survey_id = int(str(label).split(':', 1)[0])
+            except ValueError:
+                ui.notify('Choose a survey', type='warning')
+                return
+            from study_admin import _download_links
+            _download_links(survey_id, base)
+
         ui.button('Download spreadsheet (CSV)', on_click=generate_csv).classes('bg-blue-600 text-white w-fit')
+        ui.button('Download study links (CSV)', on_click=download_study_links).classes('bg-slate-800 text-white w-fit')
 
 
 @ui.page('/admin/ir/links')
@@ -1915,6 +2280,9 @@ def admin_ir_links_page(request: Request):
         ui.navigate.to('/login?error=admin_only')
         return
     ir_survey_links_page(request)
+
+
+import question_banks  # noqa: E402  # register bank routes; referenced by survey editor
 
 
 # Run the admin panel

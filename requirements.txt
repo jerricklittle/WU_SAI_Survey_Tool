@@ -2,7 +2,8 @@ python-dotenv
 openai
 flask
 python-dotenv
-psycopg2-binary
+psycopg[binary]
 sqlalchemy
 nicegui
 authlib
+

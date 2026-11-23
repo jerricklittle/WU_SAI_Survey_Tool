@@ -7,6 +7,17 @@ query that configures mappers. Otherwise ``Survey`` / ``QuestionBank`` reference
 """
 
 from user import User  # noqa: F401
-from survey_models import QuestionBank, Survey, SurveyQuestion  # noqa: F401
+from survey_models import (  # noqa: F401
+    CourseSection,
+    ParticipantLink,
+    QuestionBank,
+    QuestionCollection,
+    QuestionCollectionItem,
+    Survey,
+    SurveyArm,
+    SurveyPart,
+    SurveyPartArm,
+    SurveyQuestion,
+)
 from responses import Response  # noqa: F401
 from time_per_question import Time_Per_Question  # noqa: F401

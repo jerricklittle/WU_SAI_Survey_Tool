@@ -9,7 +9,8 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from responses import Response
-from survey_models import QuestionBank, Survey, SurveyQuestion
+from study_links import response_is_complete
+from survey_models import QuestionBank, Survey, SurveyArm, SurveyPart, SurveyPartArm, SurveyQuestion
 
 
 def sid_already_submitted(session: Session, survey_db_id: int, sid: str) -> bool:
@@ -17,12 +18,14 @@ def sid_already_submitted(session: Session, survey_db_id: int, sid: str) -> bool
     key = (sid or "").strip()
     if not key:
         return False
-    return (
-        session.query(Response.id)
+    row = (
+        session.query(Response)
         .filter(Response.survey_id == survey_db_id, Response.sid == key)
         .first()
-        is not None
     )
+    if row is None:
+        return False
+    return response_is_complete(row.response)
 
 
 def student_survey_access(
@@ -63,6 +66,7 @@ def _question_bank_to_item(q: QuestionBank, sq: SurveyQuestion) -> dict[str, Any
         "prompt": q.question_text,
         "required": True,
         "order": sq.order,
+        "partId": sq.part_id,
         "tags": list((cfg.get("tags") or []) if isinstance(cfg.get("tags"), list) else []),
     }
     if q.question_type == "likert":
@@ -98,7 +102,7 @@ def load_survey_from_db(session: Session, survey_id: int) -> dict[str, Any] | No
         session.query(SurveyQuestion, QuestionBank)
         .join(QuestionBank, SurveyQuestion.question_id == QuestionBank.id)
         .filter(SurveyQuestion.survey_id == survey_id)
-        .order_by(SurveyQuestion.order)
+        .order_by(SurveyQuestion.order, SurveyQuestion.id)
         .all()
     )
     if not rows:
@@ -124,6 +128,33 @@ def load_survey_from_db(session: Session, survey_id: int) -> dict[str, Any] | No
 
     pub = (survey.public_id or "").strip() or str(survey.id)
 
+    parts = (
+        session.query(SurveyPart)
+        .filter_by(survey_id=survey_id)
+        .order_by(SurveyPart.sort_order, SurveyPart.id)
+        .all()
+    )
+    arms = (
+        session.query(SurveyArm)
+        .filter_by(survey_id=survey_id)
+        .order_by(SurveyArm.sort_order, SurveyArm.id)
+        .all()
+    )
+    arm_key = {arm.id: arm.key for arm in arms}
+    keys_by_part: dict[int, list[str]] = {part.id: [] for part in parts}
+    if parts:
+        for membership in session.query(SurveyPartArm).filter(
+            SurveyPartArm.part_id.in_([part.id for part in parts])
+        ):
+            key = arm_key.get(membership.arm_id)
+            if key:
+                keys_by_part[membership.part_id].append(key)
+    ids_by_part: dict[int, list[str]] = {part.id: [] for part in parts}
+    for item in questions:
+        part_id = item.get("partId")
+        if part_id in ids_by_part:
+            ids_by_part[part_id].append(str(item["id"]))
+
     return {
         "schemaVersion": "1.0.0",
         "id": pub,
@@ -131,9 +162,30 @@ def load_survey_from_db(session: Session, survey_id: int) -> dict[str, Any] | No
         "description": survey.description or "",
         "participant_landing_html": landing,
         "surveyVersion": survey.version,
+        "semester": (survey.semester or "").strip(),
         "status": "published",
         "locale": "en-US",
         "settings": settings,
         "metadata": {},
         "questions": questions,
+        "parts": [
+            {
+                "id": part.id,
+                "title": part.title,
+                "submitLabel": part.submit_label or "Submit",
+                "questionIds": ids_by_part.get(part.id, []),
+                "armKeys": keys_by_part.get(part.id, []),
+            }
+            for part in parts
+        ],
+        "arms": [
+            {
+                "id": arm.id,
+                "key": arm.key,
+                "label": arm.label,
+                "llmFollowups": bool(arm.llm_followups),
+                "externalNoteHtml": arm.external_note_html or "",
+            }
+            for arm in arms
+        ],
     }

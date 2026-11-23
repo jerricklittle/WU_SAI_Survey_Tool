@@ -39,6 +39,7 @@ def _ensure_survey_extra_columns() -> None:
         ("opens_at", "TIMESTAMP"),
         ("closes_at", "TIMESTAMP"),
         ("public_id", "VARCHAR(64)"),
+        ("semester", "VARCHAR(64)"),
     ]
     for name, sql_type in specs:
         if name in cols:
@@ -55,6 +56,37 @@ def _ensure_survey_extra_columns() -> None:
 
 
 _ensure_survey_extra_columns()
+
+
+def _ensure_study_columns() -> None:
+    """Add the part column on databases created before survey parts existed."""
+    from sqlalchemy import inspect, text
+    from sqlalchemy.exc import OperationalError, ProgrammingError
+
+    insp = inspect(engine)
+    if not insp.has_table("survey_questions") or not insp.has_table("survey_parts"):
+        return
+    cols = {c["name"] for c in insp.get_columns("survey_questions")}
+    if "part_id" in cols:
+        return
+    if engine.dialect.name == "postgresql":
+        stmt = (
+            "ALTER TABLE survey_questions ADD COLUMN IF NOT EXISTS part_id INTEGER "
+            "REFERENCES survey_parts(id) ON DELETE SET NULL"
+        )
+    else:
+        stmt = (
+            "ALTER TABLE survey_questions ADD COLUMN part_id INTEGER "
+            "REFERENCES survey_parts(id) ON DELETE SET NULL"
+        )
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(stmt))
+    except (OperationalError, ProgrammingError):
+        pass
+
+
+_ensure_study_columns()
 
 
 def _backfill_survey_public_ids() -> None:
@@ -261,6 +293,86 @@ def student_survey_entry(survey_public_id: str, request: Request):
         return
 
     render_survey_entry_with_landing(Session, survey, survey_db_id, sid)
+
+
+@ui.page("/s/{token}")
+def participant_study_link(token: str):
+    """Opaque study link: class, instructor, semester, and arm are stored with the token."""
+    from study_links import answers_from_payload, load_response_row, personalize_survey, response_is_complete
+    from survey_from_db import load_survey_from_db
+    from survey_models import CourseSection, ParticipantLink, Survey, SurveyArm
+
+    token = (token or "").strip()
+    db_session = Session()
+    survey = None
+    survey_db_id = None
+    access_error = None
+    already_submitted = False
+    resume_answers = None
+    completed_part_ids = None
+    skip_intro = False
+    try:
+        link = db_session.query(ParticipantLink).filter_by(token=token).first()
+        if link is None:
+            access_error = "This survey link is not valid."
+        else:
+            arm = db_session.get(SurveyArm, link.arm_id)
+            section = db_session.get(CourseSection, link.section_id)
+            survey_row = db_session.get(Survey, link.survey_id)
+            if arm is None or section is None or survey_row is None:
+                access_error = "This survey link is not valid."
+            else:
+                base, access_error, survey_db_id = student_survey_access(db_session, survey_row.public_id or "")
+                if base is not None and not access_error:
+                    survey = personalize_survey(base, arm, section, survey_row.semester or "")
+                    existing = load_response_row(db_session, survey_db_id, token)
+                    if existing is not None and isinstance(existing.response, dict):
+                        survey["priorDynamicQuestions"] = list(
+                            existing.response.get("dynamic_questions") or []
+                        )
+                    if existing is not None and response_is_complete(existing.response):
+                        already_submitted = True
+                    elif existing is not None and isinstance(existing.response, dict):
+                        resume_answers = answers_from_payload(existing.response)
+                        completed_part_ids = [
+                            int(part_id) for part_id in (existing.response.get("completedPartIds") or [])
+                        ]
+                        skip_intro = True
+    finally:
+        db_session.close()
+
+    if access_error or survey is None or survey_db_id is None:
+        with ui.column().classes(
+            "w-full min-h-screen bg-slate-100 flex flex-col items-center justify-center px-6"
+        ):
+            with ui.card().classes("max-w-lg w-full p-8 text-center"):
+                ui.label("Survey unavailable").classes("text-xl font-bold text-slate-900 mb-2")
+                ui.label(access_error or "This survey is not available.").classes("text-slate-600")
+                ui.button("Project home", on_click=lambda: ui.navigate.to("/")).classes("mt-6")
+        return
+
+    if already_submitted:
+        with ui.column().classes(
+            "w-full min-h-screen bg-slate-100 flex flex-col items-center justify-center px-6"
+        ):
+            with ui.card().classes("max-w-lg w-full p-8 text-center"):
+                ui.label("Survey already completed").classes("text-xl font-bold text-slate-900 mb-2")
+                ui.label(
+                    "This link has already been used to submit a response for this survey. "
+                    "If you believe this is a mistake, contact your research office."
+                ).classes("text-slate-600")
+                ui.button("Project home", on_click=lambda: ui.navigate.to("/")).classes("mt-6")
+        return
+
+    render_survey_entry_with_landing(
+        Session,
+        survey,
+        survey_db_id,
+        token,
+        resume_answers=resume_answers,
+        completed_part_ids=completed_part_ids,
+        skip_intro=skip_intro,
+    )
 
 
 storage_secret = os.getenv("NICEGUI_STORAGE_SECRET", "your-secret-key-change-this-in-production-12345")
