@@ -6,4 +6,5 @@ psycopg[binary]
 sqlalchemy
 nicegui
 authlib
+openpyxl
 

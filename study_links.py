@@ -8,6 +8,7 @@ import random
 import re
 import secrets
 import uuid
+import zipfile
 from datetime import datetime
 from typing import Any
 
@@ -220,6 +221,129 @@ def study_links_csv(session, survey_id: int, base_url: str) -> str:
     writer = csv.writer(buf)
     writer.writerows(iter_study_link_rows(session, survey_id, base_url))
     return buf.getvalue()
+
+
+_LINK_SHEET_HEADERS = ["period", "group", "category", "code", "url"]
+
+
+def _section_workbook_label(section: CourseSection) -> str:
+    """File name stem: Group (Category - Code)."""
+    group = (section.instructor_name or "").strip()
+    category = (section.course_code or "").strip()
+    code = (section.section_code or "").strip()
+    detail = " - ".join(part for part in (category, code) if part)
+    if group and detail:
+        return f"{group} ({detail})"
+    return group or detail or f"Group {section.id}"
+
+
+def _unique_clipped(label: str, used: set[str], limit: int, empty: str) -> str:
+    cleaned = re.sub(r"\s+", " ", str(label or "")).strip() or empty
+    number = 1
+    while True:
+        suffix = "" if number == 1 else f" {number}"
+        room = max(limit - len(suffix), 1)
+        candidate = f"{cleaned[:room].rstrip()}{suffix}"[:limit] or f"{empty}{suffix}"[:limit]
+        if candidate.lower() not in used:
+            used.add(candidate.lower())
+            return candidate
+        number += 1
+
+
+def _excel_sheet_name(label: str, used: set[str]) -> str:
+    cleaned = re.sub(r"[\\/*?:\[\]]+", " ", str(label or ""))
+    return _unique_clipped(cleaned, used, 31, "Control")
+
+
+def _excel_filename(label: str, used: set[str]) -> str:
+    cleaned = re.sub(r'[\\/:*?"<>|]+', " ", str(label or ""))
+    stem = _unique_clipped(cleaned, used, 80, "Group")
+    return f"{stem}.xlsx"
+
+
+def _workbook_bytes(sheets: list[tuple[str, list[list[str]]]]) -> bytes:
+    """One workbook. Each item is a sheet title plus data rows (no header)."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+    from openpyxl.utils import get_column_letter
+
+    workbook = Workbook()
+    used_names: set[str] = set()
+    for index, (label, rows) in enumerate(sheets):
+        sheet = workbook.active if index == 0 else workbook.create_sheet()
+        sheet.title = _excel_sheet_name(label, used_names)
+        sheet.append(list(_LINK_SHEET_HEADERS))
+        for row in rows:
+            sheet.append(list(row))
+        for cell in sheet[1]:
+            cell.font = Font(bold=True)
+        sheet.freeze_panes = "A2"
+        sheet.auto_filter.ref = f"A1:E{max(sheet.max_row, 1)}"
+        for column, width in enumerate((18, 28, 18, 14, 72), 1):
+            sheet.column_dimensions[get_column_letter(column)].width = width
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
+def study_link_workbooks(session, survey_id: int, base_url: str) -> list[tuple[str, bytes]]:
+    """One spreadsheet per group. Each control is its own sheet."""
+    survey = session.get(Survey, survey_id)
+    if survey is None:
+        raise ValueError("Survey not found")
+    semester = (survey.semester or "").strip()
+    sections = (
+        session.query(CourseSection)
+        .filter_by(survey_id=survey_id)
+        .order_by(CourseSection.instructor_name, CourseSection.course_code, CourseSection.section_code, CourseSection.id)
+        .all()
+    )
+    arms = ordered_arms(session, survey_id)
+    if not arms:
+        raise ValueError("Add treatment arms before generating links")
+    base = (base_url or "").rstrip("/")
+    files: list[tuple[str, bytes]] = []
+    used_names: set[str] = set()
+    for section in sections:
+        links = ensure_section_links(session, section)
+        by_arm: dict[int, list[list[str]]] = {arm.id: [] for arm in arms}
+        unassigned: list[list[str]] = []
+        for link in links:
+            url = f"{base}/s/{link.token}" if base else f"/s/{link.token}"
+            row = [
+                semester,
+                section.instructor_name,
+                section.course_code,
+                section.section_code,
+                url,
+            ]
+            bucket = by_arm.get(link.arm_id)
+            if bucket is None:
+                unassigned.append(row)
+            else:
+                bucket.append(row)
+        sheets = [(arm.label or arm.key or "Control", by_arm[arm.id]) for arm in arms]
+        if unassigned:
+            sheets.append(("Unassigned", unassigned))
+        filename = _excel_filename(_section_workbook_label(section), used_names)
+        files.append((filename, _workbook_bytes(sheets)))
+    return files
+
+
+def study_links_package(session, survey_id: int, base_url: str) -> tuple[bytes, str, str]:
+    """A zip of one spreadsheet per group. Each spreadsheet has a sheet per control."""
+    survey = session.get(Survey, survey_id)
+    if survey is None:
+        raise ValueError("Survey not found")
+    files = study_link_workbooks(session, survey_id, base_url)
+    if not files:
+        raise ValueError("Add at least one group")
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+        for filename, body in files:
+            bundle.writestr(filename, body)
+    survey_name = re.sub(r"[^\w\-.]+", "_", (survey.name or "survey").strip()).strip("._") or "survey"
+    return archive.getvalue(), f"{survey_name}_ir_links.zip", "application/zip"
 
 
 def clone_study_structure(session, src_survey_id: int, dest_survey_id: int) -> dict[int, int]:

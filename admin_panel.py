@@ -2154,9 +2154,9 @@ def ir_survey_links_page(request: Request):
             ).classes('text-amber-800 bg-amber-50 border border-amber-200 p-4 rounded')
 
         ui.label(
-            'Each row in the spreadsheet lists whether the participant token is new or reused, the token, '
-            'and the full URL. For the beta study, use Download study links instead. That file has one opaque URL '
-            'per participant, with period, group, category, code, and arm in the spreadsheet only.'
+            'Each row in the first spreadsheet lists whether the participant token is new or reused, the token, '
+            'and the full URL. For a survey with groups, use Download study links instead. That download is one '
+            'zip of one spreadsheet per group, and each spreadsheet has a tab for every control.'
         ).classes('text-gray-600 text-sm')
 
         if not surveys:
@@ -2232,7 +2232,7 @@ def ir_survey_links_page(request: Request):
             _download_links(survey_id, base)
 
         ui.button('Download spreadsheet (CSV)', on_click=generate_csv).classes('bg-blue-600 text-white w-fit')
-        ui.button('Download study links (CSV)', on_click=download_study_links).classes('bg-slate-800 text-white w-fit')
+        ui.button('Download study links', on_click=download_study_links).classes('bg-slate-800 text-white w-fit')
 
 
 @ui.page('/admin/ir/links')

@@ -1,14 +1,12 @@
 """Admin controls for comparison groups, parts, respondent groups, and link files."""
 
-import re
-
 from nicegui import ui
 
 from study_links import (
     ensure_default_arms,
     ordered_arms,
     ordered_parts,
-    study_links_csv,
+    study_links_package,
 )
 from survey_models import (
     CourseSection,
@@ -358,7 +356,8 @@ def study_design_panel(survey_id: int) -> None:
             'A group is one set of people who should be split across the controls together. '
             'Enter a group, a category, a code, and how many links to issue. '
             'Links are divided across the controls in blocks of three. Downloading again reuses links already created. '
-            'Lowering the count does not revoke a link that was already issued.'
+            'Lowering the count does not revoke a link that was already issued. '
+            'The download is a zip file with one spreadsheet per group, and each spreadsheet has a tab for every control.'
         ).classes('text-sm text-gray-600 mb-2')
         with ui.row().classes('gap-2 items-end flex-wrap mb-3'):
             instructor = ui.input('Group').classes('w-48')
@@ -386,7 +385,7 @@ def study_design_panel(survey_id: int) -> None:
         else:
             ui.label('No groups yet.').classes('text-sm text-gray-500')
 
-        ui.button('Download IR links (CSV)', on_click=lambda: _download_links(survey_id)).classes(
+        ui.button('Download IR links', on_click=lambda: _download_links(survey_id)).classes(
             'bg-slate-800 text-white mt-4'
         )
 
@@ -841,14 +840,13 @@ def _download_links(survey_id: int, base_url: str | None = None) -> None:
         if session.query(CourseSection).filter_by(survey_id=survey.id).count() == 0:
             ui.notify('Add at least one group', type='warning')
             return
-        body = study_links_csv(session, survey.id, base)
+        body, filename, media_type = study_links_package(session, survey.id, base)
         session.commit()
-        name = re.sub(r'[^\w\-.]+', '_', (survey.name or 'survey').strip()) or 'survey'
     except ValueError as exc:
         session.rollback()
         ui.notify(str(exc), type='negative')
         return
     finally:
         session.close()
-    ui.download(body.encode('utf-8'), f'{name}_ir_links.csv')
+    ui.download(body, filename, media_type)
     _refresh()
