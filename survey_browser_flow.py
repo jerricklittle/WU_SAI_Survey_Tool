@@ -385,6 +385,11 @@ def _commit_current_part(s: dict[str, Any]) -> None:
 
     s.setdefault("archived_dynamic", []).extend(list(s.get("dynamic_questions") or []))
     s["dynamic_questions"] = []
+    if s.get("llm_part") and not is_final:
+        s["pending_part_index"] = index + 1
+        s["survey_state"]["mode"] = "part_intro"
+        survey_page.refresh()
+        return
     if is_final:
         dialog.close()
         clear_survey_session()
@@ -639,6 +644,12 @@ def _render_all_questions(s: dict[str, Any], survey: dict[str, Any], refresh_fn)
         ).classes("bg-green-600 text-white hover:bg-green-700 mb-6")
 
 
+def _begin_pending_part(s: dict[str, Any], refresh_fn) -> None:
+    index = int(s.pop("pending_part_index", 0) or 0)
+    _activate_part(s, index)
+    refresh_fn()
+
+
 def _advance_to_dynamic(s: dict[str, Any], refresh_fn) -> None:
     s["survey_state"]["mode"] = "dynamic"
     # An LLM part has no questions of its own, so the first follow-up is index 0.
@@ -680,6 +691,32 @@ def survey_page(dialog, session_factory):
                     "text-2xl font-bold text-gray-800 mb-4"
                 )
                 ui.spinner(size="lg", color="blue-600")
+        return
+
+    if mode == "part_intro":
+        parts = s.get("parts") or []
+        next_index = int(s.get("pending_part_index") or 0)
+        next_part = parts[next_index] if 0 <= next_index < len(parts) else {}
+        title = str(next_part.get("title") or "Next section").strip() or "Next section"
+        with ui.column().classes(
+            "w-full min-h-0 max-h-full flex-1 bg-gray-100 flex flex-col items-center justify-center gap-4 py-6"
+        ):
+            with ui.card().classes(
+                "w-full max-w-xl bg-white shadow-lg border border-gray-200 rounded-lg px-8 py-12 text-center"
+            ):
+                _show_group_heading(s.get("study"))
+                ui.label("The next section is ready.").classes(
+                    "text-lg text-gray-600 mb-2"
+                )
+                ui.label(title).classes("text-3xl font-bold text-gray-800 mb-2")
+                if parts:
+                    ui.label(f"Part {next_index + 1} of {len(parts)}").classes(
+                        "text-sm text-gray-500 mb-6"
+                    )
+                ui.button(
+                    "Start",
+                    on_click=lambda: _begin_pending_part(s, refresh),
+                ).classes("bg-blue-600 text-white text-lg px-8 py-3 rounded-lg hover:bg-blue-700")
         return
 
     if mode == "transition":
