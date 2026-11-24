@@ -76,6 +76,7 @@ def _question_bank_to_item(q: QuestionBank, sq: SurveyQuestion) -> dict[str, Any
             item["scale"] = {"min": min(keys), "max": max(keys), "labels": labels}
         else:
             item["scale"] = {"min": 1, "max": 5, "labels": {}}
+        item["allowComment"] = bool(cfg.get("allowComment"))
     elif q.question_type == "boolean":
         opts = cfg.get("options") or {}
         item["options"] = {

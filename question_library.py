@@ -52,6 +52,7 @@ def create_question_from_item(session, q: dict, seq: int, created_by: int | None
         cfg['tags'] = list(q.get('tags'))
     if qtype == 'likert':
         cfg['scale'] = q.get('scale') or {}
+        cfg['allowComment'] = bool(q.get('allowComment'))
     elif qtype == 'boolean':
         cfg['options'] = q.get('options') or {}
     elif qtype == 'text':

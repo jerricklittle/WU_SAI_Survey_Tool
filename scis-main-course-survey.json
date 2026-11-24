@@ -1,0 +1,487 @@
+{
+  "schemaVersion": "1.0.0",
+  "title": "SCIS Main Course Survey",
+  "description": "Willamette University SCIS Main Course Survey",
+  "surveyVersion": 1,
+  "questions": [
+    {
+      "id": "q1",
+      "version": 1,
+      "type": "multi",
+      "prompt": "What were your reasons for taking this course? (Please check all that apply.)",
+      "required": true,
+      "order": 1,
+      "options": [
+        "Required for major / minor",
+        "Counts toward major / minor",
+        "Fulfills Gen.Ed. Requirement",
+        "Topic interested me",
+        "Other"
+      ]
+    },
+    {
+      "id": "q2",
+      "version": 1,
+      "type": "likert",
+      "prompt": "How often did you come prepared for class?",
+      "required": true,
+      "order": 2,
+      "allowComment": false,
+      "scale": {
+        "min": 1,
+        "max": 5,
+        "labels": {
+          "1": "Never",
+          "2": "Some of the time",
+          "3": "Often",
+          "4": "Almost always",
+          "5": "Always"
+        }
+      }
+    },
+    {
+      "id": "q3",
+      "version": 1,
+      "type": "likert",
+      "prompt": "Please indicate the extent to which you Agree or Disagree with this statement: The subject matter of this class was what I expected it to be at the beginning of the course.",
+      "required": true,
+      "order": 3,
+      "allowComment": false,
+      "scale": {
+        "min": 1,
+        "max": 5,
+        "labels": {
+          "1": "Strongly Disagree",
+          "2": "Disagree",
+          "3": "Neutral",
+          "4": "Agree",
+          "5": "Strongly Agree"
+        }
+      }
+    },
+    {
+      "id": "q4",
+      "version": 1,
+      "type": "likert",
+      "prompt": "Compared to my expectations at the beginning of the semester, the grade I am earning in this course is:",
+      "required": true,
+      "order": 4,
+      "allowComment": false,
+      "scale": {
+        "min": 1,
+        "max": 5,
+        "labels": {
+          "1": "Much lower",
+          "2": "Somewhat lower",
+          "3": "About the same",
+          "4": "Somewhat higher",
+          "5": "Much higher"
+        }
+      }
+    },
+    {
+      "id": "q5",
+      "version": 1,
+      "type": "likert",
+      "prompt": "When compared with the other courses I have taken at the same level at Willamette, the work load has been:",
+      "required": true,
+      "order": 5,
+      "allowComment": false,
+      "scale": {
+        "min": 0,
+        "max": 5,
+        "labels": {
+          "0": "N/A",
+          "1": "Much less demanding",
+          "2": "Somewhat less demanding",
+          "3": "Comparable",
+          "4": "Somewhat more demanding",
+          "5": "Much more demanding"
+        }
+      }
+    },
+    {
+      "id": "q6",
+      "version": 1,
+      "type": "likert",
+      "prompt": "When compared with the other courses I have taken at the same level at Willamette, the grading standards have been:",
+      "required": true,
+      "order": 6,
+      "allowComment": false,
+      "scale": {
+        "min": 0,
+        "max": 5,
+        "labels": {
+          "0": "N/A",
+          "1": "Much less demanding",
+          "2": "Somewhat less demanding",
+          "3": "Comparable",
+          "4": "Somewhat more demanding",
+          "5": "Much more demanding"
+        }
+      }
+    },
+    {
+      "id": "q8",
+      "version": 1,
+      "type": "likert",
+      "prompt": "The instructor, [InstructorName], demonstrated substantial understanding of the subject matter central to the course.",
+      "required": true,
+      "order": 8,
+      "allowComment": true,
+      "scale": {
+        "min": 1,
+        "max": 5,
+        "labels": {
+          "1": "Strongly Disagree",
+          "2": "Disagree",
+          "3": "Neutral",
+          "4": "Agree",
+          "5": "Strongly Agree"
+        }
+      }
+    },
+    {
+      "id": "q9",
+      "version": 1,
+      "type": "likert",
+      "prompt": "In general, the Instructor, [InstructorName], was well-prepared for class sessions.",
+      "required": true,
+      "order": 9,
+      "allowComment": true,
+      "scale": {
+        "min": 1,
+        "max": 5,
+        "labels": {
+          "1": "Strongly Disagree",
+          "2": "Disagree",
+          "3": "Neutral",
+          "4": "Agree",
+          "5": "Strongly Agree"
+        }
+      }
+    },
+    {
+      "id": "q10",
+      "version": 1,
+      "type": "likert",
+      "prompt": "Over the term, this course was well-structured.",
+      "required": true,
+      "order": 10,
+      "allowComment": true,
+      "scale": {
+        "min": 1,
+        "max": 5,
+        "labels": {
+          "1": "Strongly Disagree",
+          "2": "Disagree",
+          "3": "Neutral",
+          "4": "Agree",
+          "5": "Strongly Agree"
+        }
+      }
+    },
+    {
+      "id": "q11",
+      "version": 1,
+      "type": "likert",
+      "prompt": "The pedagogical strategies of this course helped me to learn.",
+      "required": true,
+      "order": 11,
+      "allowComment": true,
+      "scale": {
+        "min": 1,
+        "max": 5,
+        "labels": {
+          "1": "Strongly Disagree",
+          "2": "Disagree",
+          "3": "Neutral",
+          "4": "Agree",
+          "5": "Strongly Agree"
+        }
+      }
+    },
+    {
+      "id": "q12",
+      "version": 1,
+      "type": "likert",
+      "prompt": "The course materials were accessible to me.",
+      "required": true,
+      "order": 12,
+      "allowComment": true,
+      "scale": {
+        "min": 1,
+        "max": 5,
+        "labels": {
+          "1": "Strongly Disagree",
+          "2": "Disagree",
+          "3": "Neutral",
+          "4": "Agree",
+          "5": "Strongly Agree"
+        }
+      }
+    },
+    {
+      "id": "q13",
+      "version": 1,
+      "type": "likert",
+      "prompt": "The instructor, [InstructorName], provided multiple ways to demonstrate my proficiency in the course.",
+      "required": true,
+      "order": 13,
+      "allowComment": true,
+      "scale": {
+        "min": 1,
+        "max": 5,
+        "labels": {
+          "1": "Strongly Disagree",
+          "2": "Disagree",
+          "3": "Neutral",
+          "4": "Agree",
+          "5": "Strongly Agree"
+        }
+      }
+    },
+    {
+      "id": "q14",
+      "version": 1,
+      "type": "likert",
+      "prompt": "The instructor, [InstructorName], sought to meaningfully incorporate diverse voices in the course content.",
+      "required": true,
+      "order": 14,
+      "allowComment": true,
+      "scale": {
+        "min": 1,
+        "max": 5,
+        "labels": {
+          "1": "Strongly Disagree",
+          "2": "Disagree",
+          "3": "Neutral",
+          "4": "Agree",
+          "5": "Strongly Agree"
+        }
+      }
+    },
+    {
+      "id": "q15",
+      "version": 1,
+      "type": "likert",
+      "prompt": "The instructor, [InstructorName], fostered a climate of mutual respect and open communication in the classroom.",
+      "required": true,
+      "order": 15,
+      "allowComment": true,
+      "scale": {
+        "min": 1,
+        "max": 5,
+        "labels": {
+          "1": "Strongly Disagree",
+          "2": "Disagree",
+          "3": "Neutral",
+          "4": "Agree",
+          "5": "Strongly Agree"
+        }
+      }
+    },
+    {
+      "id": "q16",
+      "version": 1,
+      "type": "likert",
+      "prompt": "The instructor, [InstructorName], sought to maintain students' interest in the course.",
+      "required": true,
+      "order": 16,
+      "allowComment": true,
+      "scale": {
+        "min": 1,
+        "max": 5,
+        "labels": {
+          "1": "Strongly Disagree",
+          "2": "Disagree",
+          "3": "Neutral",
+          "4": "Agree",
+          "5": "Strongly Agree"
+        }
+      }
+    },
+    {
+      "id": "q17",
+      "version": 1,
+      "type": "likert",
+      "prompt": "The instructor, [InstructorName], sought to stimulate students' intellectual curiosity and/or creative abilities.",
+      "required": true,
+      "order": 17,
+      "allowComment": true,
+      "scale": {
+        "min": 1,
+        "max": 5,
+        "labels": {
+          "1": "Strongly Disagree",
+          "2": "Disagree",
+          "3": "Neutral",
+          "4": "Agree",
+          "5": "Strongly Agree"
+        }
+      }
+    },
+    {
+      "id": "q18",
+      "version": 1,
+      "type": "likert",
+      "prompt": "The instructor, [InstructorName], made clear the objectives of the course.",
+      "required": true,
+      "order": 18,
+      "allowComment": true,
+      "scale": {
+        "min": 1,
+        "max": 5,
+        "labels": {
+          "1": "Strongly Disagree",
+          "2": "Disagree",
+          "3": "Neutral",
+          "4": "Agree",
+          "5": "Strongly Agree"
+        }
+      }
+    },
+    {
+      "id": "q19",
+      "version": 1,
+      "type": "likert",
+      "prompt": "The instructor, [InstructorName], made clear the requirements of the course.",
+      "required": true,
+      "order": 19,
+      "allowComment": true,
+      "scale": {
+        "min": 1,
+        "max": 5,
+        "labels": {
+          "1": "Strongly Disagree",
+          "2": "Disagree",
+          "3": "Neutral",
+          "4": "Agree",
+          "5": "Strongly Agree"
+        }
+      }
+    },
+    {
+      "id": "q20",
+      "version": 1,
+      "type": "likert",
+      "prompt": "The instructor, [InstructorName], made clear the criteria for evaluating student work.",
+      "required": true,
+      "order": 20,
+      "allowComment": true,
+      "scale": {
+        "min": 1,
+        "max": 5,
+        "labels": {
+          "1": "Strongly Disagree",
+          "2": "Disagree",
+          "3": "Neutral",
+          "4": "Agree",
+          "5": "Strongly Agree"
+        }
+      }
+    },
+    {
+      "id": "q21",
+      "version": 1,
+      "type": "likert",
+      "prompt": "The instructor, [InstructorName], exhibited impartiality in evaluating student work.",
+      "required": true,
+      "order": 21,
+      "allowComment": true,
+      "scale": {
+        "min": 1,
+        "max": 5,
+        "labels": {
+          "1": "Strongly Disagree",
+          "2": "Disagree",
+          "3": "Neutral",
+          "4": "Agree",
+          "5": "Strongly Agree"
+        }
+      }
+    },
+    {
+      "id": "q22",
+      "version": 1,
+      "type": "likert",
+      "prompt": "The instructor, [InstructorName], exhibited fairness in evaluating student work.",
+      "required": true,
+      "order": 22,
+      "allowComment": true,
+      "scale": {
+        "min": 1,
+        "max": 5,
+        "labels": {
+          "1": "Strongly Disagree",
+          "2": "Disagree",
+          "3": "Neutral",
+          "4": "Agree",
+          "5": "Strongly Agree"
+        }
+      }
+    },
+    {
+      "id": "q23",
+      "version": 1,
+      "type": "likert",
+      "prompt": "The instructor, [InstructorName], was reasonably available outside of class.",
+      "required": true,
+      "order": 23,
+      "allowComment": true,
+      "scale": {
+        "min": 1,
+        "max": 5,
+        "labels": {
+          "1": "Strongly Disagree",
+          "2": "Disagree",
+          "3": "Neutral",
+          "4": "Agree",
+          "5": "Strongly Agree"
+        }
+      }
+    },
+    {
+      "id": "q24",
+      "version": 1,
+      "type": "text",
+      "prompt": "Please provide additional comments for the instructor concerning teaching effectiveness. Your comments will only be read by the instructor. You may wish to comment on the strengths and weaknesses of the course/instructor and make suggestions for improvement.",
+      "required": true,
+      "order": 24,
+      "text": {
+        "placeholder": "",
+        "maxLength": 4000
+      }
+    }
+  ],
+  "arms": [
+    {
+      "key": "course",
+      "label": "Course survey"
+    }
+  ],
+  "parts": [
+    {
+      "title": "About this course",
+      "submitLabel": "Continue",
+      "onePerPage": false,
+      "questionIds": ["q1", "q2", "q3", "q4", "q5", "q6"],
+      "armKeys": ["course"]
+    },
+    {
+      "title": "About the course",
+      "submitLabel": "Continue",
+      "contextText": "Please indicate the extent to which you agree or disagree with each of the following statements about the course. After each statement, you have the opportunity to elaborate on your response. Feedback that will help your instructor improve the course is welcomed.",
+      "onePerPage": false,
+      "questionIds": ["q8", "q9", "q10", "q11", "q12", "q13", "q14", "q15", "q16", "q17", "q18", "q19", "q20", "q21", "q22", "q23"],
+      "armKeys": ["course"]
+    },
+    {
+      "title": "Additional comments",
+      "submitLabel": "Submit",
+      "onePerPage": false,
+      "questionIds": ["q24"],
+      "armKeys": ["course"]
+    }
+  ]
+}

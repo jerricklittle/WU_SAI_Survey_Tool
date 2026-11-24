@@ -146,8 +146,19 @@ def _is_answered(item: dict[str, Any] | None) -> bool:
     return True
 
 
-def _save_answer(s: dict[str, Any], question: dict[str, Any], value: Any) -> None:
+_KEEP_COMMENT = object()
+
+
+def _save_answer(
+    s: dict[str, Any],
+    question: dict[str, Any],
+    value: Any,
+    *,
+    comment: Any = _KEEP_COMMENT,
+) -> None:
     """Store answer with prompt text so stored responses (esp. AI follow-ups) stay interpretable."""
+    existing = s["answers"].get(question["id"])
+    existing = existing if isinstance(existing, dict) else {}
     item: dict[str, Any] = {
         "questionId": question["id"],
         "questionType": question["type"],
@@ -159,7 +170,35 @@ def _save_answer(s: dict[str, Any], question: dict[str, Any], value: Any) -> Non
     triggered = question.get("triggered_by")
     if triggered:
         item["triggeredByQuestionId"] = triggered
+    if comment is _KEEP_COMMENT:
+        kept = existing.get("comment")
+        if isinstance(kept, str) and kept.strip():
+            item["comment"] = kept
+    else:
+        text = str(comment or "").strip()
+        if text:
+            item["comment"] = text
     s["answers"][question["id"]] = item
+
+
+def _save_comment(s: dict[str, Any], question: dict[str, Any], comment: str) -> None:
+    existing = s["answers"].get(question["id"])
+    existing = existing if isinstance(existing, dict) else {}
+    _save_answer(s, question, existing.get("value"), comment=comment)
+
+
+def _render_likert_comment(s: dict[str, Any], q: dict[str, Any]) -> None:
+    if q.get("type") != "likert" or not q.get("allowComment"):
+        return
+    ui.label("Comments or feedback on above question:").classes("text-sm text-gray-600 mt-4 mb-1")
+    textarea = ui.textarea(
+        value=str(s["answers"].get(q["id"], {}).get("comment") or ""),
+    ).classes("w-full").props("autogrow")
+
+    def remember(field=textarea, question=q) -> None:
+        _save_comment(s, question, field.value or "")
+
+    textarea.on("blur", lambda e: remember())
 
 
 def _handle_text_answer(s: dict[str, Any], question: dict[str, Any], value: str) -> None:
@@ -590,6 +629,7 @@ def _render_question_inputs(s: dict[str, Any], q: dict[str, Any], refresh_fn) ->
             value=s["answers"].get(q["id"], {}).get("value"),
             on_change=lambda e: store(e.value),
         ).classes("gap-2")
+        _render_likert_comment(s, q)
     elif q["type"] == "boolean":
         ui.radio(
             [q["options"]["trueLabel"], q["options"]["falseLabel"]],
@@ -851,6 +891,7 @@ def survey_page(dialog, session_factory):
                     value=s["answers"].get(q["id"], {}).get("value"),
                     on_change=lambda e: _save_answer(s, q, e.value),
                 ).classes("gap-2")
+                _render_likert_comment(s, q)
 
             elif q["type"] == "boolean":
                 ui.radio(

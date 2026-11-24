@@ -350,8 +350,10 @@ def question_form(question=None, return_survey_id=None, return_bank_id=None, ret
                                     '4': 'Agree',
                                     '5': 'Strongly Agree'
                                 }
-                            }
+                            },
+                            'allowComment': False,
                         }
+                    form_state['config'].setdefault('allowComment', False)
                     
                     labels = form_state['config']['scale']['labels']
                     for key in sorted(labels.keys(), key=int):
@@ -363,6 +365,14 @@ def question_form(question=None, return_survey_id=None, return_bank_id=None, ret
                             )
                     
                     ui.button('➕ Add Option', on_click=lambda: add_likert_option(form_state, config_section)).classes('mt-2')
+                    ui.checkbox(
+                        'Comment box under this question',
+                        value=bool(form_state['config'].get('allowComment')),
+                        on_change=lambda e: form_state['config'].update({'allowComment': bool(e.value)}),
+                    ).classes('mt-3')
+                    ui.label(
+                        'Off unless you turn it on. Respondents can write a comment about the question above.'
+                    ).classes('text-sm text-gray-500')
                 
                 elif current_type == 'multi':
                     ui.label('Multi-Select Options').classes('text-lg font-semibold mt-4 mb-2')
@@ -518,6 +528,10 @@ def save_question(form_state, question_id=None, return_survey_id=None, return_ba
     cfg = copy.deepcopy(raw_cfg) if isinstance(raw_cfg, dict) else {}
     cfg.pop('adaptive', None)
     cfg.pop('prompt_text', None)
+    if form_state['type'] == 'likert':
+        cfg['allowComment'] = bool(cfg.get('allowComment'))
+    else:
+        cfg.pop('allowComment', None)
 
     session = Session()
 
@@ -1089,6 +1103,7 @@ def export_survey_results_csv(survey_id: int) -> None:
 
         # Per-response rows: static answers in separate columns; follow-ups in one readable text blob column.
         qids: set[str] = set()
+        comment_qids: set[str] = set()
         flattened: list[dict[str, object]] = []
         for r in rows:
             payload = r.response or {}
@@ -1112,6 +1127,10 @@ def export_survey_results_csv(survey_id: int) -> None:
                         ans_map[qid] = json.dumps(val, ensure_ascii=False)
                     else:
                         ans_map[qid] = val
+                    comment = str(a.get('comment') or '').strip()
+                    if comment:
+                        ans_map[f'{qid}__comment'] = comment
+                        comment_qids.add(qid)
 
             dyn_blob = payload.get('dynamic_questions')
             if not dyn_blob and isinstance(answers, list):
@@ -1173,6 +1192,10 @@ def export_survey_results_csv(survey_id: int) -> None:
             label = _make_unique(headers, label)
             headers.append(label)
             qid_to_header[qid] = label
+            if qid in comment_qids:
+                comment_label = _make_unique(headers, f'Comments or feedback ({qid})')
+                headers.append(comment_label)
+                qid_to_header[f'{qid}__comment'] = comment_label
 
         dyn_header = _make_unique(headers, 'dynamic_questions')
         headers.append(dyn_header)
@@ -1194,6 +1217,9 @@ def export_survey_results_csv(survey_id: int) -> None:
             }
             for qid in ordered_qids:
                 out[qid_to_header[qid]] = item.get(qid, '')
+                comment_key = f'{qid}__comment'
+                if comment_key in qid_to_header:
+                    out[qid_to_header[comment_key]] = item.get(comment_key, '')
             out[dyn_header] = item.get('dynamic_questions', '')
             w.writerow(out)
 
