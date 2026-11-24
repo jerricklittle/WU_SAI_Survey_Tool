@@ -451,4 +451,4 @@ def participant_study_link(token: str):
 
 
 storage_secret = os.getenv("NICEGUI_STORAGE_SECRET", "your-secret-key-change-this-in-production-12345")
-ui.run(storage_secret=storage_secret)
+ui.run(title="Survey DIVA", storage_secret=storage_secret)
