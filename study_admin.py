@@ -25,6 +25,21 @@ def _session():
     return Session()
 
 
+async def _live_text(element) -> str:
+    """Read the field's current text, including characters not yet sent to the server."""
+    try:
+        value = await ui.run_javascript(f'getElement({int(element.id)}).inputValue')
+    except Exception:
+        value = None
+    if value is None:
+        value = getattr(element, 'value', '')
+    if value is None:
+        return ''
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
 @ui.refreshable
 def study_design_panel(survey_id: int) -> None:
     survey_id = int(survey_id)
@@ -269,19 +284,30 @@ def study_design_panel(survey_id: int) -> None:
                             on_click=lambda part_id=part['id']: _add_questions_to_part(survey_id, part_id),
                         ).classes('bg-slate-700 text-white')
                 with ui.row().classes('gap-2 mt-2 flex-wrap'):
-                    ui.button(
-                        'Save part',
-                        on_click=lambda part_id=part['id'], title_input=title_input, submit_input=submit_input, kind_input=kind_input, fields=llm_fields, context_input=context_input: _save_part(
+                    async def save_this_part(
+                        part_id=part['id'],
+                        title_input=title_input,
+                        submit_input=submit_input,
+                        kind_input=kind_input,
+                        fields=llm_fields,
+                        context_input=context_input,
+                    ):
+                        kind = kind_input.value or 'questions'
+                        count = None if fields.get('count') is None else await _live_text(fields['count'])
+                        instructions = '' if fields.get('instructions') is None else await _live_text(fields['instructions'])
+                        link_url = await _live_text(fields['url']) if kind == 'link' and fields.get('url') is not None else None
+                        _save_part(
                             part_id,
-                            title_input.value,
-                            submit_input.value,
-                            (kind_input.value or 'questions') == 'llm',
-                            None if fields.get('count') is None else fields['count'].value,
-                            '' if fields.get('instructions') is None else fields['instructions'].value,
-                            fields['url'].value if (kind_input.value or 'questions') == 'link' else None,
-                            context_input.value,
-                        ),
-                    ).props('flat dense no-caps').classes('text-blue-700')
+                            await _live_text(title_input),
+                            await _live_text(submit_input),
+                            kind == 'llm',
+                            count,
+                            instructions,
+                            link_url,
+                            await _live_text(context_input),
+                        )
+
+                    ui.button('Save part', on_click=save_this_part).props('flat dense no-caps').classes('text-blue-700')
                     ui.button('Delete', on_click=lambda part_id=part['id']: _delete_part(part_id)).props('flat dense color=red')
 
         ui.separator().classes('my-4')

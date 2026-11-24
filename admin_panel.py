@@ -790,14 +790,41 @@ def import_survey_json_dict(data: dict) -> int:
 
 
 def delete_survey(survey_id):
-    """Delete a survey"""
+    """Delete a survey and the rows that reference it."""
+    from responses import Response
+    from survey_models import ParticipantLink
+    from time_per_question import Time_Per_Question
+
     session = Session()
-    survey = session.query(Survey).filter_by(id=survey_id).first()
-    if survey:
+    try:
+        survey = session.get(Survey, int(survey_id))
+        if survey is None:
+            ui.notify('Survey not found', type='warning')
+            return
+        name = survey.name
+        response_ids = [
+            row.id for row in session.query(Response.id).filter(Response.survey_id == survey.id)
+        ]
+        if response_ids:
+            session.query(Time_Per_Question).filter(
+                Time_Per_Question.response_id.in_(response_ids)
+            ).delete(synchronize_session=False)
+            session.query(Response).filter(Response.id.in_(response_ids)).delete(synchronize_session=False)
+        session.query(ParticipantLink).filter(ParticipantLink.survey_id == survey.id).delete(
+            synchronize_session=False
+        )
+        session.query(SurveyQuestion).filter(SurveyQuestion.survey_id == survey.id).delete(
+            synchronize_session=False
+        )
         session.delete(survey)
         session.commit()
-        ui.notify(f'Survey "{survey.name}" deleted', type='positive')
-    session.close()
+    except Exception:
+        session.rollback()
+        ui.notify('Could not delete that survey.', type='negative')
+        return
+    finally:
+        session.close()
+    ui.notify(f'Survey "{name}" deleted', type='positive')
     survey_list_page.refresh()
 
 
