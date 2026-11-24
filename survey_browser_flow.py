@@ -64,6 +64,11 @@ def _thanks_path(study: dict[str, Any] | None) -> str:
     return f"/survey/thanks?context={quote(heading)}"
 
 
+def _go_to_thanks(study: dict[str, Any] | None) -> None:
+    """Load the thank-you page. Replacing the address in place leaves the old page and can 404."""
+    ui.run_javascript(f"window.location.replace({json.dumps(_thanks_path(study))})")
+
+
 def _cid() -> str:
     return str(context.client.id)
 
@@ -363,12 +368,7 @@ def submit_survey(dialog, session_factory, s: dict[str, Any]) -> None:
 
     dialog.close()
     clear_survey_session()
-    thanks = _thanks_path(s.get("study"))
-    ui.navigate.to(thanks)
-    try:
-        ui.navigate.history.replace(thanks)
-    except AttributeError:
-        pass
+    _go_to_thanks(s.get("study"))
 
 
 def _queue_submit(s: dict[str, Any]) -> None:
@@ -472,12 +472,7 @@ def _commit_current_part(s: dict[str, Any]) -> None:
     if is_final:
         dialog.close()
         clear_survey_session()
-        thanks = _thanks_path(s.get("study"))
-        ui.navigate.to(thanks)
-        try:
-            ui.navigate.history.replace(thanks)
-        except AttributeError:
-            pass
+        _go_to_thanks(s.get("study"))
         return
 
     _activate_part(s, index + 1, introduce=leaving_llm)

@@ -328,12 +328,8 @@ def survey_thanks_page(request: Request):
             if context:
                 ui.label(context).classes("text-sm font-semibold text-slate-600 mb-2")
             ui.label("Thank you").classes("text-2xl font-bold text-slate-900 mb-3")
-            ui.label(
-                "Your responses were submitted successfully. You can close this window."
-            ).classes("text-slate-600 mb-6")
-            ui.button("Project home", on_click=lambda: ui.navigate.to("/")).classes(
-                "bg-blue-700 text-white px-6 py-2 rounded-lg"
-            )
+            ui.label("Your responses were submitted.").classes("text-slate-600 mb-3")
+            ui.label("You can close this page.").classes("text-lg font-semibold text-slate-900")
 
 
 @ui.page("/survey/{survey_public_id}")
