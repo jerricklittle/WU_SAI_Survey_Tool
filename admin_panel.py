@@ -973,18 +973,23 @@ def survey_edit_form(survey=None):
             
             ui.label('Questions with "IMI" tag will be shuffled randomly').classes('text-sm text-gray-500')
             
+            async def save_details():
+                from study_admin import _live_text
+
+                update_survey_details(
+                    survey_id,
+                    await _live_text(name_input),
+                    await _live_text(desc_input),
+                    randomize_enabled.value,
+                    await _live_text(landing_editor),
+                    await _live_text(opens_input),
+                    await _live_text(closes_input),
+                    await _live_text(semester_input),
+                )
+
             if is_edit:
                 with ui.row().classes('gap-2 items-center mt-4 flex-wrap'):
-                    ui.button('Update Details', on_click=lambda: update_survey_details(
-                        survey_id,
-                        name_input.value,
-                        desc_input.value,
-                        randomize_enabled.value,
-                        landing_editor.value,
-                        opens_input.value,
-                        closes_input.value,
-                        semester_input.value,
-                    )).classes('bg-blue-600 text-white')
+                    ui.button('Update Details', on_click=save_details).classes('bg-blue-600 text-white')
                     ui.button(
                         'Export survey (JSON)',
                         on_click=lambda: export_survey_template_json(survey_id),
@@ -994,16 +999,21 @@ def survey_edit_form(survey=None):
             import study_admin
             study_admin.study_design_panel(survey_id)
         else:
-            ui.button('Create Survey', on_click=lambda: create_survey_initial(
-                name_input.value,
-                desc_input.value,
-                randomize_enabled.value,
-                landing_editor.value,
-                opens_input.value,
-                closes_input.value,
-                None,
-                semester_input.value,
-            )).classes('bg-blue-600 text-white mt-4')
+            async def create_survey():
+                from study_admin import _live_text
+
+                create_survey_initial(
+                    await _live_text(name_input),
+                    await _live_text(desc_input),
+                    randomize_enabled.value,
+                    await _live_text(landing_editor),
+                    await _live_text(opens_input),
+                    await _live_text(closes_input),
+                    None,
+                    await _live_text(semester_input),
+                )
+
+            ui.button('Create Survey', on_click=create_survey).classes('bg-blue-600 text-white mt-4')
 
 
 def export_survey_results_csv(survey_id: int) -> None:

@@ -22,6 +22,20 @@ from time_per_question import Time_Per_Question
 _survey_sessions: dict[str, dict[str, Any]] = {}
 
 
+def _use_current_survey_name(survey: dict[str, Any], survey_db_id: int, session_factory) -> None:
+    """Show the survey name stored now, not the name from when this page was first opened."""
+    session = session_factory()
+    try:
+        from survey_models import Survey
+
+        row = session.get(Survey, int(survey_db_id))
+        name = (row.name or "").strip() if row is not None else ""
+    finally:
+        session.close()
+    if name:
+        survey["title"] = name
+
+
 def _group_heading(study: dict[str, Any] | None) -> str:
     """Respondent-facing label: Group (Category - Code)."""
     study = study or {}
@@ -667,6 +681,8 @@ def survey_page(dialog, session_factory):
         return
 
     survey = s["survey"]
+    if s.get("survey_db_id") and session_factory is not None:
+        _use_current_survey_name(survey, int(s["survey_db_id"]), session_factory)
     mode = s["survey_state"]["mode"]
     refresh = survey_page.refresh
     if (
@@ -953,6 +969,8 @@ def render_survey_entry_with_landing(
     Do not ``root.clear()`` before opening the dialog: the dialog can be a descendant of
     that column, and clearing it removes the dialog → blank page (especially on Railway).
     """
+    _use_current_survey_name(survey, survey_db_id, session_factory)
+
     def proceed() -> None:
         landing_block.visible = False
         if note and not skip_intro:
