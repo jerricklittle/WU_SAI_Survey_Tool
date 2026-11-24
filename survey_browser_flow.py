@@ -105,7 +105,12 @@ from sqlalchemy.exc import IntegrityError
 
 from Question_Timer import Question_Timer
 from chatbot import analyze_all_responses_for_survey, analyze_part_followups
-from study_links import fill_placeholders, normalize_llm_question_count, upsert_part_response
+from study_links import (
+    fill_placeholders,
+    normalize_llm_question_count,
+    save_response_draft,
+    upsert_part_response,
+)
 from responses import Response
 from time_per_question import Time_Per_Question
 
@@ -288,6 +293,95 @@ def _save_comment(s: dict[str, Any], question: dict[str, Any], comment: str) -> 
     _save_answer(s, question, existing.get("value"), comment=comment)
 
 
+def _reset_open_fields(s: dict[str, Any]) -> None:
+    s["_open_fields"] = []
+
+
+def _track_open_field(s: dict[str, Any], question: dict[str, Any], element, kind: str) -> None:
+    """Remember a text box so Next can read it before the page is replaced."""
+    s.setdefault("_open_fields", []).append(
+        {"kind": kind, "question": question, "element": element}
+    )
+
+
+async def _read_open_text(element) -> str | None:
+    """Current text in the box. None means the box is already gone, so leave the saved text alone."""
+    element_id = int(element.id)
+    script = (
+        "(() => {"
+        f" const el = getElement({element_id});"
+        " if (el && typeof el.inputValue === 'string') return el.inputValue;"
+        f" const root = getHtmlElement({element_id});"
+        " const field = root && root.querySelector('textarea, input');"
+        " return field ? field.value : null;"
+        "})()"
+    )
+    try:
+        value = await ui.run_javascript(script)
+    except Exception:
+        return None
+    if value is None:
+        return None
+    return str(value)
+
+
+async def _flush_open_fields(s: dict[str, Any]) -> None:
+    """Copy open text into the answer before leaving the question or writing the response."""
+    for item in list(s.get("_open_fields") or []):
+        text = await _read_open_text(item["element"])
+        if text is None:
+            continue
+        if item["kind"] == "comment":
+            _save_comment(s, item["question"], text)
+        else:
+            _save_answer(s, item["question"], text)
+
+
+def _save_answer_draft(s: dict[str, Any]) -> None:
+    """Write the current answers, including likert comments, before the part is submitted."""
+    if not s.get("part_mode"):
+        return
+    session_factory = s.get("_session_factory")
+    survey = s.get("survey")
+    if session_factory is None or not isinstance(survey, dict) or not s.get("sid"):
+        return
+    submission = _build_submission_payload(s, survey, s.get("study", {}).get("armKey") or "part")
+    try:
+        session = session_factory()
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).error("Could not store the in-progress response", exc_info=True)
+        return
+    try:
+        save_response_draft(
+            session,
+            survey_db_id=int(s["survey_db_id"]),
+            survey_public_id=str(survey.get("id") or ""),
+            survey_version=int(survey.get("surveyVersion") or 1),
+            token=str(s["sid"]),
+            study=s.get("study") or {},
+            static_answers=submission["answers"],
+            dynamic_blob=submission["dynamic_questions"],
+        )
+    except Exception:
+        session.rollback()
+        import logging
+
+        logging.getLogger(__name__).error("Could not store the in-progress response", exc_info=True)
+    finally:
+        session.close()
+
+
+def _then_flush(s: dict[str, Any], action):
+    async def run() -> None:
+        await _flush_open_fields(s)
+        _save_answer_draft(s)
+        action()
+
+    return run
+
+
 def _render_multi_checks(s: dict[str, Any], q: dict[str, Any], save) -> None:
     """Checkboxes for a question that allows more than one choice."""
     options = [str(option) for option in (q.get("options") or [])]
@@ -316,11 +410,15 @@ def _render_likert_comment(s: dict[str, Any], q: dict[str, Any]) -> None:
     textarea = ui.textarea(
         value=str(s["answers"].get(q["id"], {}).get("comment") or ""),
     ).classes("w-full").props("autogrow")
+    _track_open_field(s, q, textarea, "comment")
 
-    def remember(field=textarea, question=q) -> None:
-        _save_comment(s, question, field.value or "")
+    async def remember(field=textarea, question=q) -> None:
+        text = await _read_open_text(field)
+        if text is None:
+            return
+        _save_comment(s, question, text)
 
-    textarea.on("blur", lambda e: remember())
+    textarea.on("blur", remember)
 
 
 def _handle_text_answer(s: dict[str, Any], question: dict[str, Any], value: str) -> None:
@@ -472,7 +570,8 @@ def _queue_submit(s: dict[str, Any]) -> None:
 
     client = s.get("_nicegui_client") or context.client
 
-    def _run() -> None:
+    async def _run() -> None:
+        await _flush_open_fields(s)
         submit_survey(dialog, session_factory, s)
 
     # ui.timer must be created inside a client slot; async tasks have no slot after await.
@@ -515,7 +614,8 @@ def _activate_part(s: dict[str, Any], index: int, *, introduce: bool = False) ->
 def _queue_part_submit(s: dict[str, Any]) -> None:
     client = s.get("_nicegui_client") or context.client
 
-    def _run() -> None:
+    async def _run() -> None:
+        await _flush_open_fields(s)
         _commit_current_part(s)
 
     with client:
@@ -724,12 +824,13 @@ def _prev_page(s: dict[str, Any], refresh_fn) -> None:
 def _render_question_inputs(s: dict[str, Any], q: dict[str, Any], refresh_fn) -> None:
     """Draw one question. Choice answers update the progress bar."""
 
-    def store(value, question=q) -> None:
+    async def store(value, question=q) -> None:
         if value is None:
             return
         previous = s["answers"].get(question["id"], {}).get("value")
         if previous == value:
             return
+        await _flush_open_fields(s)
         _save_answer(s, question, value)
         refresh_fn()
 
@@ -753,15 +854,16 @@ def _render_question_inputs(s: dict[str, Any], q: dict[str, Any], refresh_fn) ->
             placeholder=q.get("text", {}).get("placeholder", ""),
             value=s["answers"].get(q["id"], {}).get("value", ""),
         ).classes("w-full")
-        def remember_text(field=textarea, question=q) -> None:
-            previous = s["answers"].get(question["id"], {}).get("value", "")
-            current = field.value or ""
-            if current == (previous or ""):
+        _track_open_field(s, q, textarea, "answer")
+
+        async def remember_text(question=q) -> None:
+            before = s["answers"].get(question["id"], {}).get("value", "")
+            await _flush_open_fields(s)
+            if (s["answers"].get(question["id"], {}).get("value") or "") == (before or ""):
                 return
-            _save_answer(s, question, current)
             refresh_fn()
 
-        textarea.on("blur", lambda e: remember_text())
+        textarea.on("blur", remember_text)
     elif q["type"] == "multi":
         _render_multi_checks(s, q, store)
     elif q["type"] == "display":
@@ -810,7 +912,7 @@ def _render_all_questions(s: dict[str, Any], survey: dict[str, Any], refresh_fn)
                 _render_question_inputs(s, q, refresh_fn)
         ui.button(
             part_label,
-            on_click=lambda: _queue_part_submit(s),
+            on_click=_then_flush(s, lambda: _queue_part_submit(s)),
         ).classes("bg-green-600 text-white hover:bg-green-700 mb-6")
 
 
@@ -834,6 +936,7 @@ def survey_page(dialog, session_factory):
         return
 
     survey = s["survey"]
+    _reset_open_fields(s)
     if s.get("survey_db_id") and session_factory is not None:
         _use_current_survey_name(survey, int(s["survey_db_id"]), session_factory)
     mode = s["survey_state"]["mode"]
@@ -1005,7 +1108,7 @@ def survey_page(dialog, session_factory):
                 ui.radio(
                     options,
                     value=s["answers"].get(q["id"], {}).get("value"),
-                    on_change=lambda e: _save_answer(s, q, e.value),
+                    on_change=lambda e, question=q: _save_answer(s, question, e.value) if e.value is not None else None,
                 ).props("inline=false").classes("w-full")
                 _render_likert_comment(s, q)
 
@@ -1023,10 +1126,15 @@ def survey_page(dialog, session_factory):
                     placeholder=q.get("text", {}).get("placeholder", ""),
                     value=s["answers"].get(q["id"], {}).get("value", ""),
                 ).classes("w-full")
-                textarea.on(
-                    "blur",
-                    lambda e: _handle_text_answer(s, q, textarea.value),
-                )
+                _track_open_field(s, q, textarea, "answer")
+
+                async def remember_open_text(question=q) -> None:
+                    text = await _read_open_text(textarea)
+                    if text is None:
+                        return
+                    _handle_text_answer(s, question, text)
+
+                textarea.on("blur", remember_open_text)
 
             elif q["type"] == "multi":
                 _render_multi_checks(s, q, lambda value, question=q: _save_answer(s, question, value))
@@ -1037,7 +1145,7 @@ def survey_page(dialog, session_factory):
                     show_back = False
 
                 if show_back:
-                    ui.button("Back", on_click=lambda: _prev_page(s, refresh)).classes(
+                    ui.button("Back", on_click=_then_flush(s, lambda: _prev_page(s, refresh))).classes(
                         "bg-gray-200 text-gray-700 hover:bg-gray-300"
                     )
                 else:
@@ -1057,22 +1165,25 @@ def survey_page(dialog, session_factory):
                 if is_last_static and s.get("part_mode") and not part_needs_llm:
                     ui.button(
                         part_label,
-                        on_click=lambda: _queue_part_submit(s),
+                        on_click=_then_flush(s, lambda: _queue_part_submit(s)),
                     ).classes("bg-green-600 text-white hover:bg-green-700")
                 elif is_last_static:
                     ui.button(
                         part_label if s.get("part_mode") else "Submit",
-                        on_click=lambda: _finalize_static_block(s, refresh),
+                        on_click=_then_flush(s, lambda: _finalize_static_block(s, refresh)),
                     ).classes("bg-green-600 text-white hover:bg-green-700")
                 elif is_truly_last:
                     ui.button(
                         part_label if s.get("part_mode") else "Submit",
-                        on_click=lambda: _queue_part_submit(s) if s.get("part_mode") else submit_survey(dialog, session_factory, s),
+                        on_click=_then_flush(
+                            s,
+                            lambda: _queue_part_submit(s) if s.get("part_mode") else submit_survey(dialog, session_factory, s),
+                        ),
                     ).classes("bg-green-600 text-white hover:bg-green-700")
                 else:
                     ui.button(
                         "Next",
-                        on_click=lambda: _next_page(s, refresh),
+                        on_click=_then_flush(s, lambda: _next_page(s, refresh)),
                     ).classes("bg-blue-600 text-white hover:bg-blue-700")
 
 

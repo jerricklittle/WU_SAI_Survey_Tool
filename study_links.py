@@ -674,6 +674,60 @@ def upsert_part_response(
     return row
 
 
+def save_response_draft(
+    session,
+    *,
+    survey_db_id: int,
+    survey_public_id: str,
+    survey_version: int,
+    token: str,
+    study: dict[str, Any],
+    static_answers: list[dict[str, Any]],
+    dynamic_blob: list[dict[str, Any]],
+) -> None:
+    """Store answers before a part is finished. Does not mark the part or the survey complete."""
+    row = load_response_row(session, survey_db_id, token)
+    if row is not None and response_is_complete(row.response):
+        return
+    now = datetime.utcnow().isoformat()
+    meta = {
+        "surveyId": survey_public_id,
+        "surveyVersion": survey_version,
+        "submittedAt": now,
+        "sid": token,
+        "answers": list(static_answers),
+        "dynamic_questions": list(dynamic_blob),
+        "completed": False,
+        "arm": study.get("armKey") or "",
+        "armLabel": study.get("armLabel") or "",
+        "sectionId": study.get("sectionId"),
+        "period": study.get("period") or study.get("semester") or "",
+        "group": study.get("group") or study.get("instructor") or "",
+        "category": study.get("category") or study.get("course") or "",
+        "code": study.get("code") or study.get("section") or "",
+    }
+    if row is None:
+        payload = {
+            "id": str(uuid.uuid4()),
+            "completedPartIds": [],
+            "parts": {},
+            **meta,
+        }
+        row = Response(
+            response=payload,
+            uuid=payload["id"],
+            sid=token,
+            survey_id=survey_db_id,
+        )
+        session.add(row)
+    else:
+        payload = dict(row.response or {})
+        payload.update(meta)
+        row.response = payload
+        flag_modified(row, "response")
+    session.commit()
+
+
 def question_part_ids(session, survey_id: int) -> dict[int, int | None]:
     rows = session.query(SurveyQuestion).filter_by(survey_id=survey_id).all()
     return {row.id: row.part_id for row in rows}
