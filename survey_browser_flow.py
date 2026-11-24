@@ -629,7 +629,12 @@ def _render_all_questions(s: dict[str, Any], survey: dict[str, Any], refresh_fn)
                     f'{part.get("title") or "Part"} · Part {int(s.get("part_index") or 0) + 1} of {len(s["parts"])}'
                 ).classes("text-sm text-gray-500 mt-1")
             ui.label(f"{answered} of {total} answered").classes("text-xs text-gray-400 mt-2")
-            ui.linear_progress(value=(answered / total) if total else 0, color="blue-600").classes("mt-1 h-1")
+            ui.linear_progress(
+                value=(answered / total) if total else 0,
+                show_value=False,
+                size="10px",
+                color="blue-600",
+            ).classes("mt-2")
         for index, q in enumerate(questions, 1):
             with ui.card().classes(
                 "w-full max-w-xl bg-white shadow-sm border border-gray-200 rounded-lg px-6 py-6"
@@ -810,7 +815,12 @@ def survey_page(dialog, session_factory):
                     f'{part.get("title") or "Part"} · Part {int(s.get("part_index") or 0) + 1} of {len(s["parts"])}'
                 ).classes("text-sm text-gray-500 mt-1")
             ui.label(f"Question {current + 1} of {total}").classes("text-xs text-gray-400 mt-2")
-            ui.linear_progress(value=(current + 1) / total, color="blue-600").classes("mt-1 h-1")
+            ui.linear_progress(
+                value=(current + 1) / total,
+                show_value=False,
+                size="10px",
+                color="blue-600",
+            ).classes("mt-2")
 
         with ui.card().classes(
             "w-full max-w-xl bg-white shadow-sm border border-gray-200 rounded-lg px-6 py-6"
