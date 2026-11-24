@@ -243,7 +243,7 @@ def question_index_page():
                     rows.append({
                         'id': q.id,
                         'name': q.name,
-                        'type': 'text only' if q.question_type == 'display' else q.question_type,
+                        'type': {'display': 'text only', 'multi': 'checkboxes'}.get(q.question_type, q.question_type),
                         'text': q.question_text[:50] + '...' if len(q.question_text) > 50 else q.question_text,
                         'version': q.version,
                         'actions': q.id
@@ -476,7 +476,7 @@ def question_form(question=None, return_survey_id=None, return_bank_id=None, ret
                     'likert': 'likert',
                     'boolean': 'boolean',
                     'text': 'text',
-                    'multi': 'multi',
+                    'multi': 'checkboxes',
                     'display': 'text only',
                 },
                 label='Type',

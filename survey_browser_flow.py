@@ -193,6 +193,27 @@ def _save_comment(s: dict[str, Any], question: dict[str, Any], comment: str) -> 
     _save_answer(s, question, existing.get("value"), comment=comment)
 
 
+def _render_multi_checks(s: dict[str, Any], q: dict[str, Any], save) -> None:
+    """Checkboxes for a question that allows more than one choice."""
+    options = [str(option) for option in (q.get("options") or [])]
+    selected = list(s["answers"].get(q["id"], {}).get("value") or [])
+
+    def toggle(option: str, checked: bool) -> None:
+        current = [item for item in (s["answers"].get(q["id"], {}).get("value") or []) if item in options]
+        if checked and option not in current:
+            current.append(option)
+        if not checked:
+            current = [item for item in current if item != option]
+        save(current)
+
+    for option in options:
+        ui.checkbox(
+            option,
+            value=option in selected,
+            on_change=lambda e, choice=option: toggle(choice, bool(e.value)),
+        )
+
+
 def _render_likert_comment(s: dict[str, Any], q: dict[str, Any]) -> None:
     if q.get("type") != "likert" or not q.get("allowComment"):
         return
@@ -657,15 +678,7 @@ def _render_question_inputs(s: dict[str, Any], q: dict[str, Any], refresh_fn) ->
 
         textarea.on("blur", lambda e: remember_text())
     elif q["type"] == "multi":
-        opts = q.get("options") or []
-        current_vals = list(s["answers"].get(q["id"], {}).get("value") or [])
-        ui.select(
-            opts,
-            multiple=True,
-            label="Select all that apply",
-            value=current_vals,
-            on_change=lambda e: store(list(e.value or [])),
-        ).classes("w-full")
+        _render_multi_checks(s, q, store)
     elif q["type"] == "display":
         return
 
@@ -931,15 +944,7 @@ def survey_page(dialog, session_factory):
                 )
 
             elif q["type"] == "multi":
-                opts = q.get("options") or []
-                current_vals = list(s["answers"].get(q["id"], {}).get("value") or [])
-                ui.select(
-                    opts,
-                    multiple=True,
-                    label="Select all that apply",
-                    value=current_vals,
-                    on_change=lambda e: _save_answer(s, q, list(e.value or [])),
-                ).classes("w-full")
+                _render_multi_checks(s, q, lambda value, question=q: _save_answer(s, question, value))
 
             with ui.row().classes("w-full justify-between mt-6"):
                 show_back = survey["settings"].get("allowBack", True) and current > 0
