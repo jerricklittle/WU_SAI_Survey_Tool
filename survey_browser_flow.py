@@ -21,16 +21,22 @@ ui.add_css(
     }
     .survey-dialog .q-dialog__inner {
       flex-direction: column !important;
+      flex-wrap: nowrap !important;
       align-items: stretch !important;
       justify-content: flex-start !important;
       width: 100% !important;
       max-width: 100% !important;
+      height: 100% !important;
+      max-height: 100dvh !important;
       overflow-x: hidden !important;
+      overflow-y: auto !important;
     }
     .survey-dialog .q-dialog__inner--maximized > div {
       width: 100% !important;
       max-width: 100% !important;
       min-width: 0 !important;
+      height: 100% !important;
+      max-height: 100dvh !important;
       box-sizing: border-box !important;
       overflow-x: hidden !important;
     }
@@ -38,10 +44,15 @@ ui.add_css(
       width: 100% !important;
       max-width: 100% !important;
       min-width: 0 !important;
+      height: 100% !important;
+      max-height: 100% !important;
       box-sizing: border-box !important;
+      display: flex !important;
       flex-direction: column !important;
+      flex-wrap: nowrap !important;
       align-items: stretch !important;
       overflow-x: hidden !important;
+      overflow-y: auto !important;
       padding-left: 0.75rem;
       padding-right: 0.75rem;
     }
@@ -50,6 +61,7 @@ ui.add_css(
       width: 100% !important;
       max-width: min(36rem, 100%) !important;
       min-width: 0 !important;
+      flex: 0 0 auto !important;
       align-self: center !important;
       box-sizing: border-box !important;
     }
@@ -766,7 +778,7 @@ def _render_all_questions(s: dict[str, Any], survey: dict[str, Any], refresh_fn)
     part = (s.get("parts") or [{}])[int(s.get("part_index") or 0)]
     part_label = part.get("submitLabel") or "Submit"
     with ui.column().classes(
-        f"{_SURVEY_FLOW} min-h-0 max-h-full flex-1 overflow-y-auto bg-gray-100 flex flex-col items-stretch justify-start py-4 gap-3"
+        f"{_SURVEY_FLOW} min-h-0 max-h-full flex-1 overflow-y-auto bg-gray-100 flex-col items-stretch justify-start py-4 gap-3"
     ):
         with ui.card().classes(
             "w-full max-w-xl bg-white shadow-sm border border-gray-200 rounded-lg px-6 py-5"
@@ -840,7 +852,7 @@ def survey_page(dialog, session_factory):
 
     if mode == "loading":
         with ui.column().classes(
-            f"{_SURVEY_FLOW} min-h-0 max-h-full flex-1 bg-gray-100 flex flex-col items-stretch justify-center gap-4 py-6"
+            f"{_SURVEY_FLOW} min-h-0 max-h-full flex-1 bg-gray-100 flex-col items-stretch justify-center gap-4 py-6"
         ):
             with ui.card().classes(
                 "w-full max-w-xl bg-white shadow-lg border border-gray-200 rounded-lg px-8 py-12 text-center"
@@ -859,7 +871,7 @@ def survey_page(dialog, session_factory):
         title = str(part.get("title") or "Next section").strip() or "Next section"
         context = str(s.get("part_context") or "").strip()
         with ui.column().classes(
-            f"{_SURVEY_FLOW} min-h-0 max-h-full flex-1 overflow-y-auto bg-gray-100 flex flex-col items-stretch justify-center gap-4 py-6"
+            f"{_SURVEY_FLOW} min-h-0 max-h-full flex-1 overflow-y-auto bg-gray-100 flex-col items-stretch justify-center gap-4 py-6"
         ):
             with ui.card().classes(
                 "w-full max-w-xl bg-white shadow-lg border border-gray-200 rounded-lg px-8 py-12 text-center"
@@ -886,7 +898,7 @@ def survey_page(dialog, session_factory):
 
     if mode == "transition":
         with ui.column().classes(
-            f"{_SURVEY_FLOW} min-h-0 max-h-full flex-1 bg-gray-100 flex flex-col items-stretch justify-center gap-4 py-6"
+            f"{_SURVEY_FLOW} min-h-0 max-h-full flex-1 bg-gray-100 flex-col items-stretch justify-center gap-4 py-6"
         ):
             with ui.card().classes(
                 "w-full max-w-xl bg-white shadow-lg border border-gray-200 rounded-lg px-8 py-12 text-center"
@@ -909,7 +921,7 @@ def survey_page(dialog, session_factory):
         part = (s.get("parts") or [{}])[int(s.get("part_index") or 0)]
         continue_label = part.get("submitLabel") or "Continue"
         with ui.column().classes(
-            f"{_SURVEY_FLOW} min-h-0 max-h-full flex-1 bg-gray-100 flex flex-col items-stretch justify-center gap-4 py-6"
+            f"{_SURVEY_FLOW} min-h-0 max-h-full flex-1 bg-gray-100 flex-col items-stretch justify-center gap-4 py-6"
         ):
             with ui.card().classes(
                 "w-full max-w-xl bg-white shadow-lg border border-gray-200 rounded-lg px-8 py-10"
@@ -957,7 +969,7 @@ def survey_page(dialog, session_factory):
     s["timer"].start_question(q["id"])
 
     with ui.column().classes(
-        f"{_SURVEY_FLOW} min-h-0 max-h-full flex-1 overflow-y-auto bg-gray-100 flex flex-col items-stretch justify-start py-4 gap-3"
+        f"{_SURVEY_FLOW} min-h-0 max-h-full flex-1 overflow-y-auto bg-gray-100 flex-col items-stretch justify-start py-4 gap-3"
     ):
         with ui.card().classes(
             "w-full max-w-xl bg-white shadow-sm border border-gray-200 rounded-lg px-6 py-5"
