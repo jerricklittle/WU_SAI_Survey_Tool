@@ -412,6 +412,113 @@ def clone_study_structure(session, src_survey_id: int, dest_survey_id: int) -> d
     return part_map
 
 
+_PLACEHOLDER = re.compile(r"\[([A-Za-z][A-Za-z0-9_]*)\]")
+
+
+def parse_placeholder_lines(text: str) -> dict[str, str]:
+    """Read 'Name: value' lines into the values that replace [Name]."""
+    parsed: dict[str, str] = {}
+    for line in str(text or "").splitlines():
+        if ":" not in line:
+            continue
+        name, value = line.split(":", 1)
+        name = name.strip().strip("[]")
+        value = value.strip()
+        if name and value:
+            parsed[name] = value
+    return parsed
+
+
+def format_placeholder_lines(values) -> str:
+    if not isinstance(values, dict):
+        return ""
+    return "\n".join(f"{name}: {value}" for name, value in values.items() if str(name).strip() and str(value).strip())
+
+
+def placeholder_values(section: CourseSection, semester: str) -> dict[str, str]:
+    """Values for [Name] tokens. [Instructor] and [Group] are the group name unless the group sets them."""
+    group = (section.instructor_name or "").strip()
+    category = (section.course_code or "").strip()
+    code = (section.section_code or "").strip()
+    period = (semester or "").strip()
+    values: dict[str, str] = {}
+
+    def put(name: str, value: str) -> None:
+        if value:
+            values[name.lower()] = value
+
+    put("group", group)
+    put("instructor", group)
+    put("instructorname", group)
+    put("category", category)
+    put("code", code)
+    put("period", period)
+    custom = section.placeholders if isinstance(section.placeholders, dict) else {}
+    custom_keys: set[str] = set()
+    for name, value in custom.items():
+        key = str(name).strip().strip("[]")
+        put(key, str(value).strip())
+        custom_keys.add(key.lower())
+    if "instructor" in custom_keys and "instructorname" not in custom_keys:
+        values["instructorname"] = values["instructor"]
+    elif "instructorname" in custom_keys and "instructor" not in custom_keys:
+        values["instructor"] = values["instructorname"]
+    return values
+
+
+def fill_placeholders(text: str, values: dict[str, str]) -> str:
+    if not text or not values or "[" not in text:
+        return text
+
+    def replace(match: re.Match) -> str:
+        value = values.get(match.group(1).lower())
+        if not value:
+            return match.group(0)
+        return value
+
+    return _PLACEHOLDER.sub(replace, text)
+
+
+def apply_survey_placeholders(data: dict[str, Any], values: dict[str, str]) -> dict[str, Any]:
+    """Fill [Name] tokens in the text a respondent reads."""
+    if not values:
+        return data
+    for key in ("title", "description", "participant_landing_html", "armExternalNoteHtml"):
+        if isinstance(data.get(key), str):
+            data[key] = fill_placeholders(data[key], values)
+    for question in data.get("questions") or []:
+        if not isinstance(question, dict):
+            continue
+        if isinstance(question.get("prompt"), str):
+            question["prompt"] = fill_placeholders(question["prompt"], values)
+        scale = question.get("scale")
+        if isinstance(scale, dict) and isinstance(scale.get("labels"), dict):
+            scale["labels"] = {
+                label_key: fill_placeholders(label, values) if isinstance(label, str) else label
+                for label_key, label in scale["labels"].items()
+            }
+        options = question.get("options")
+        if isinstance(options, list):
+            question["options"] = [
+                fill_placeholders(option, values) if isinstance(option, str) else option
+                for option in options
+            ]
+        elif isinstance(options, dict):
+            for option_key, option in list(options.items()):
+                if isinstance(option, str):
+                    options[option_key] = fill_placeholders(option, values)
+        text_cfg = question.get("text")
+        if isinstance(text_cfg, dict) and isinstance(text_cfg.get("placeholder"), str):
+            text_cfg["placeholder"] = fill_placeholders(text_cfg["placeholder"], values)
+    for part in data.get("parts") or []:
+        if not isinstance(part, dict):
+            continue
+        for key in ("title", "contextText", "linkUrl"):
+            if isinstance(part.get(key), str):
+                part[key] = fill_placeholders(part[key], values)
+    return data
+
+
 def personalize_survey(payload: dict[str, Any], arm: SurveyArm, section: CourseSection, semester: str) -> dict[str, Any]:
     """Restrict a survey payload to one comparison group. The respondent URL does not carry these fields."""
     import copy
@@ -469,7 +576,9 @@ def personalize_survey(payload: dict[str, Any], arm: SurveyArm, section: CourseS
         "group": section.instructor_name,
         "category": section.course_code,
         "code": section.section_code,
+        "fill": placeholder_values(section, semester),
     }
+    apply_survey_placeholders(data, data["study"]["fill"])
     return data
 
 

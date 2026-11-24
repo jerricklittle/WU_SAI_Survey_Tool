@@ -66,6 +66,10 @@ def _ensure_study_schema() -> None:
 
     insp = inspect(engine)
     statements = []
+    if insp.has_table('course_sections'):
+        section_cols = {c['name'] for c in insp.get_columns('course_sections')}
+        if 'placeholders' not in section_cols:
+            statements.append('ALTER TABLE course_sections ADD COLUMN placeholders JSONB')
     if insp.has_table('surveys'):
         cols = {c['name'] for c in insp.get_columns('surveys')}
         if 'semester' not in cols:
@@ -237,7 +241,7 @@ def question_index_page():
                     rows.append({
                         'id': q.id,
                         'name': q.name,
-                        'type': q.question_type,
+                        'type': 'text only' if q.question_type == 'display' else q.question_type,
                         'text': q.question_text[:50] + '...' if len(q.question_text) > 50 else q.question_text,
                         'version': q.version,
                         'actions': q.id
@@ -429,6 +433,11 @@ def question_form(question=None, return_survey_id=None, return_bank_id=None, ret
                         'change', lambda e: form_state['config']['options'].update({'falseLabel': e.value})
                     )
                 
+                elif current_type == 'display':
+                    ui.label(
+                        'Shown as written. Respondents do not answer this.'
+                    ).classes('text-sm text-gray-500 mt-2')
+
                 elif current_type == 'text':
                     ui.label('Open Ended Options').classes('text-lg font-semibold mt-4 mb-2')
 
@@ -461,7 +470,13 @@ def question_form(question=None, return_survey_id=None, return_bank_id=None, ret
                 config_section.refresh()
 
             ui.select(
-                ['likert', 'boolean', 'text', 'multi'],
+                {
+                    'likert': 'likert',
+                    'boolean': 'boolean',
+                    'text': 'text',
+                    'multi': 'multi',
+                    'display': 'text only',
+                },
                 label='Type',
                 value=form_state['type'],
                 on_change=handle_type_change,
@@ -1055,7 +1070,7 @@ def export_survey_results_csv(survey_id: int) -> None:
             if not q:
                 continue
             qid = str(q.name or '').strip()
-            if not qid:
+            if not qid or q.question_type == 'display':
                 continue
             static_ordered_ids.append(qid)
             prompt = str(q.question_text or '').strip()
@@ -1960,6 +1975,9 @@ def survey_detail_page(survey_id: int):
                     elif question_type == 'multi':
                         # Skip multi for now
                         ui.label('Multi-select responses (visualization coming soon)').classes('text-gray-500 italic')
+
+                    elif question_type == 'display':
+                        ui.label('Text only. No answer is collected.').classes('text-gray-500 italic')
             # no DB session needed here; survey_questions were eager-loaded above
 
 

@@ -4,8 +4,10 @@ from nicegui import ui
 
 from study_links import (
     ensure_default_arms,
+    format_placeholder_lines,
     ordered_arms,
     ordered_parts,
+    parse_placeholder_lines,
     study_links_package,
 )
 from survey_models import (
@@ -140,6 +142,7 @@ def study_design_panel(survey_id: int) -> None:
                     'code': section.section_code,
                     'enrollment': section.enrollment,
                     'issued': issued.get(section.id, 0),
+                    'placeholders': format_placeholder_lines(section.placeholders),
                 }
                 for section in sections
             ],
@@ -391,31 +394,61 @@ def study_design_panel(survey_id: int) -> None:
             'Enter a group, a category, a code, and how many links to issue. '
             'Links are divided across the controls in blocks of three. Downloading again reuses links already created. '
             'Lowering the count does not revoke a link that was already issued. '
-            'The download is a zip file with one spreadsheet per group, and each spreadsheet has a tab for every control.'
+            'The download is a zip file with one spreadsheet per group, and each spreadsheet has a tab for every control. '
+            'Survey text can include [Instructor], which is filled with the group name. '
+            'Add other lines as Name: value to fill [Name] on the respondent pages.'
         ).classes('text-sm text-gray-600 mb-2')
-        with ui.row().classes('gap-2 items-end flex-wrap mb-3'):
-            instructor = ui.input('Group').classes('w-48')
-            course = ui.input('Category').classes('w-32')
-            section_code = ui.input('Code').classes('w-24')
-            enrollment = ui.number('Participants', value=0, min=0, precision=0).classes('w-28')
-            ui.button(
-                'Add group',
-                on_click=lambda: _add_section(
-                    survey_id, instructor.value, course.value, section_code.value, enrollment.value
-                ),
-            ).classes('bg-blue-600 text-white')
+        with ui.column().classes('w-full gap-2 mb-3'):
+            with ui.row().classes('gap-2 items-end flex-wrap'):
+                instructor = ui.input('Group').classes('w-48')
+                course = ui.input('Category').classes('w-32')
+                section_code = ui.input('Code').classes('w-24')
+                enrollment = ui.number('Participants', value=0, min=0, precision=0).classes('w-28')
+            placeholders = ui.textarea(
+                'Placeholders',
+                placeholder='Room: Ford 201',
+            ).classes('w-full').props('autogrow')
+
+            async def add_group(
+                group_field=instructor,
+                category_field=course,
+                code_field=section_code,
+                count_field=enrollment,
+                placeholder_field=placeholders,
+            ) -> None:
+                _add_section(
+                    survey_id,
+                    await _live_text(group_field),
+                    await _live_text(category_field),
+                    await _live_text(code_field),
+                    await _live_text(count_field),
+                    await _live_text(placeholder_field),
+                )
+
+            ui.button('Add group', on_click=add_group).classes('bg-blue-600 text-white w-fit')
 
         if snapshot['sections']:
             for section in snapshot['sections']:
-                with ui.row().classes('w-full items-center justify-between gap-2 py-1'):
-                    ui.label(
-                        f'{section["group"]} · {section["category"]} · {section["code"]} · '
-                        f'{section["enrollment"]} participants · {section["issued"]} links issued'
-                    ).classes('text-sm')
-                    ui.button(
-                        'Remove',
-                        on_click=lambda section_id=section['id']: _delete_section(section_id),
-                    ).props('flat dense color=red')
+                with ui.column().classes('w-full gap-1 py-2'):
+                    with ui.row().classes('w-full items-center justify-between gap-2'):
+                        ui.label(
+                            f'{section["group"]} · {section["category"]} · {section["code"]} · '
+                            f'{section["enrollment"]} participants · {section["issued"]} links issued'
+                        ).classes('text-sm')
+                        ui.button(
+                            'Remove',
+                            on_click=lambda section_id=section['id']: _delete_section(section_id),
+                        ).props('flat dense color=red')
+                    saved = ui.textarea(
+                        'Placeholders',
+                        value=section['placeholders'],
+                        placeholder='Instructor: Dr. Rivera',
+                    ).classes('w-full').props('autogrow')
+
+                    async def save_placeholders(section_id=section['id'], field=saved) -> None:
+                        _save_section_placeholders(section_id, await _live_text(field))
+
+                    ui.button('Save placeholders', on_click=save_placeholders).props('flat dense').classes('w-fit')
         else:
             ui.label('No groups yet.').classes('text-sm text-gray-500')
 
@@ -810,7 +843,14 @@ def _delete_part(part_id: int) -> None:
     _refresh()
 
 
-def _add_section(survey_id: int, instructor: str, course: str, section_code: str, enrollment) -> None:
+def _add_section(
+    survey_id: int,
+    instructor: str,
+    course: str,
+    section_code: str,
+    enrollment,
+    placeholders_text: str = '',
+) -> None:
     instructor = (instructor or '').strip()
     course = (course or '').strip()
     section_code = (section_code or '').strip()
@@ -830,12 +870,28 @@ def _add_section(survey_id: int, instructor: str, course: str, section_code: str
                 course_code=course,
                 section_code=section_code,
                 enrollment=count,
+                placeholders=parse_placeholder_lines(placeholders_text) or None,
             )
         )
         session.commit()
     finally:
         session.close()
     ui.notify('Group added', type='positive')
+    _refresh()
+
+
+def _save_section_placeholders(section_id: int, placeholders_text: str) -> None:
+    session = _session()
+    try:
+        section = session.get(CourseSection, int(section_id))
+        if section is None:
+            ui.notify('Group not found', type='warning')
+            return
+        section.placeholders = parse_placeholder_lines(placeholders_text) or None
+        session.commit()
+    finally:
+        session.close()
+    ui.notify('Placeholders saved', type='positive')
     _refresh()
 
 

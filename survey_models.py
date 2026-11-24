@@ -50,7 +50,7 @@ class QuestionBank(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(255), nullable=False)  # Short name/identifier for the question
     question_text = Column(Text, nullable=False)  # The actual question text/prompt
-    question_type = Column(String(50), nullable=False)  # 'likert', 'boolean', 'text'
+    question_type = Column(String(50), nullable=False)  # 'likert', 'boolean', 'text', 'multi', 'display'
     version = Column(Integer, default=1)
     created_by = Column(Integer, ForeignKey('users.id'), nullable=True)  # Who created this question
     config = Column(JSONB, nullable=False)  # Store type-specific config (options, labels, char limits, etc.)
@@ -198,6 +198,8 @@ class CourseSection(Base):
     course_code = Column(String(64), nullable=False)
     section_code = Column(String(64), nullable=False)
     enrollment = Column(Integer, nullable=False, default=0)
+    # Extra [Name] values for this group. [Instructor] and [Group] use the group name unless set here.
+    placeholders = Column(JSONB, nullable=True)
 
     survey = relationship("Survey")
 

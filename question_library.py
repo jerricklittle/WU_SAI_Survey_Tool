@@ -62,6 +62,8 @@ def create_question_from_item(session, q: dict, seq: int, created_by: int | None
             cfg['prompt_text'] = str(q.get('prompt_text') or '').strip()
     elif qtype == 'multi':
         cfg['options'] = q.get('options') or []
+    elif qtype == 'display':
+        cfg = {'tags': cfg.get('tags', [])} if cfg.get('tags') else {}
 
     question = QuestionBank(
         name=qid,

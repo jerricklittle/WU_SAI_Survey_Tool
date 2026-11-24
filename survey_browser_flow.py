@@ -15,7 +15,7 @@ from sqlalchemy.exc import IntegrityError
 
 from Question_Timer import Question_Timer
 from chatbot import analyze_all_responses_for_survey, analyze_part_followups
-from study_links import normalize_llm_question_count, upsert_part_response
+from study_links import fill_placeholders, normalize_llm_question_count, upsert_part_response
 from responses import Response
 from time_per_question import Time_Per_Question
 
@@ -33,7 +33,7 @@ def _use_current_survey_name(survey: dict[str, Any], survey_db_id: int, session_
     finally:
         session.close()
     if name:
-        survey["title"] = name
+        survey["title"] = fill_placeholders(name, (survey.get("study") or {}).get("fill") or {})
 
 
 def _group_heading(study: dict[str, Any] | None) -> str:
@@ -44,8 +44,10 @@ def _group_heading(study: dict[str, Any] | None) -> str:
     code = str(study.get("code") or study.get("section") or "").strip()
     detail = " - ".join(piece for piece in (category, code) if piece)
     if group and detail:
-        return f"{group} ({detail})"
-    return group or detail
+        heading = f"{group} ({detail})"
+    else:
+        heading = group or detail
+    return fill_placeholders(heading, study.get("fill") or {})
 
 
 def _show_group_heading(study: dict[str, Any] | None) -> None:
@@ -133,6 +135,10 @@ def _dynamic_question_list(s: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _get_all_questions(s: dict[str, Any]) -> list[dict[str, Any]]:
     return s["survey"]["questions"] + s["dynamic_questions"]
+
+
+def _is_display(question: dict[str, Any]) -> bool:
+    return question.get("type") == "display"
 
 
 def _is_answered(item: dict[str, Any] | None) -> bool:
@@ -660,12 +666,15 @@ def _render_question_inputs(s: dict[str, Any], q: dict[str, Any], refresh_fn) ->
             value=current_vals,
             on_change=lambda e: store(list(e.value or [])),
         ).classes("w-full")
+    elif q["type"] == "display":
+        return
 
 
 def _render_all_questions(s: dict[str, Any], survey: dict[str, Any], refresh_fn) -> None:
     questions = list(survey.get("questions") or [])
-    total = len(questions)
-    answered = sum(1 for q in questions if _is_answered(s["answers"].get(q["id"])))
+    answerable = [q for q in questions if not _is_display(q)]
+    total = len(answerable)
+    answered = sum(1 for q in answerable if _is_answered(s["answers"].get(q["id"])))
     if questions:
         s["timer"].start_question(questions[0]["id"])
     part = (s.get("parts") or [{}])[int(s.get("part_index") or 0)]
@@ -682,18 +691,24 @@ def _render_all_questions(s: dict[str, Any], survey: dict[str, Any], refresh_fn)
                 ui.label(
                     f'{part.get("title") or "Part"} · Part {int(s.get("part_index") or 0) + 1} of {len(s["parts"])}'
                 ).classes("text-sm text-gray-500 mt-1")
-            ui.label(f"{answered} of {total} answered").classes("text-xs text-gray-400 mt-2")
-            ui.linear_progress(
-                value=(answered / total) if total else 0,
-                show_value=False,
-                size="10px",
-                color="blue-600",
-            ).classes("mt-2")
-        for index, q in enumerate(questions, 1):
+            if total:
+                ui.label(f"{answered} of {total} answered").classes("text-xs text-gray-400 mt-2")
+                ui.linear_progress(
+                    value=answered / total,
+                    show_value=False,
+                    size="10px",
+                    color="blue-600",
+                ).classes("mt-2")
+        number = 0
+        for q in questions:
             with ui.card().classes(
                 "w-full max-w-xl bg-white shadow-sm border border-gray-200 rounded-lg px-6 py-6"
             ):
-                ui.label(f"{index}. {q['prompt']}").classes("text-base font-semibold text-gray-800 mb-4")
+                if _is_display(q):
+                    ui.label(q["prompt"]).classes("text-base text-gray-800 whitespace-pre-wrap")
+                    continue
+                number += 1
+                ui.label(f"{number}. {q['prompt']}").classes("text-base font-semibold text-gray-800 mb-4")
                 _render_question_inputs(s, q, refresh_fn)
         ui.button(
             part_label,
@@ -881,7 +896,10 @@ def survey_page(dialog, session_factory):
         with ui.card().classes(
             "w-full max-w-xl bg-white shadow-sm border border-gray-200 rounded-lg px-6 py-6"
         ):
-            ui.label(q["prompt"]).classes("text-base font-semibold text-gray-800 mb-4")
+            if _is_display(q):
+                ui.label(q["prompt"]).classes("text-base text-gray-800 whitespace-pre-wrap")
+            else:
+                ui.label(q["prompt"]).classes("text-base font-semibold text-gray-800 mb-4")
 
             if q["type"] == "likert":
                 labels = q["scale"]["labels"]

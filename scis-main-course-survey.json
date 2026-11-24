@@ -122,6 +122,14 @@
       }
     },
     {
+      "id": "q7",
+      "version": 1,
+      "type": "display",
+      "prompt": "Please indicate the extent to which you agree or disagree with each of the following statements about the course. After each statement, you have the opportunity to elaborate on your response. Feedback that will help your instructor improve the course is welcomed.",
+      "required": false,
+      "order": 7
+    },
+    {
       "id": "q8",
       "version": 1,
       "type": "likert",
@@ -471,9 +479,8 @@
     {
       "title": "About the course",
       "submitLabel": "Continue",
-      "contextText": "Please indicate the extent to which you agree or disagree with each of the following statements about the course. After each statement, you have the opportunity to elaborate on your response. Feedback that will help your instructor improve the course is welcomed.",
       "onePerPage": false,
-      "questionIds": ["q8", "q9", "q10", "q11", "q12", "q13", "q14", "q15", "q16", "q17", "q18", "q19", "q20", "q21", "q22", "q23"],
+      "questionIds": ["q7", "q8", "q9", "q10", "q11", "q12", "q13", "q14", "q15", "q16", "q17", "q18", "q19", "q20", "q21", "q22", "q23"],
       "armKeys": ["course"]
     },
     {

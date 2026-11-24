@@ -64,7 +64,7 @@ def _question_bank_to_item(q: QuestionBank, sq: SurveyQuestion) -> dict[str, Any
         "version": q.version,
         "type": q.question_type,
         "prompt": q.question_text,
-        "required": True,
+        "required": q.question_type != "display",
         "order": sq.order,
         "partId": sq.part_id,
         "tags": list((cfg.get("tags") or []) if isinstance(cfg.get("tags"), list) else []),

@@ -80,6 +80,8 @@ def import_survey_from_json(filepath):
             config = {
                 'options': q_data.get('options', ['Option 1', 'Option 2'])
             }
+        elif q_type == 'display':
+            config = {}
 
         if q_data.get('tags'):
             config['tags'] = q_data['tags']

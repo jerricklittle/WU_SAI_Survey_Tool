@@ -64,6 +64,14 @@ def _ensure_study_columns() -> None:
     from sqlalchemy.exc import OperationalError, ProgrammingError
 
     insp = inspect(engine)
+    if insp.has_table("course_sections"):
+        section_cols = {c["name"] for c in insp.get_columns("course_sections")}
+        if "placeholders" not in section_cols:
+            try:
+                with engine.begin() as conn:
+                    conn.execute(text("ALTER TABLE course_sections ADD COLUMN placeholders JSONB"))
+            except (OperationalError, ProgrammingError):
+                pass
     if not insp.has_table("survey_questions") or not insp.has_table("survey_parts"):
         return
     cols = {c["name"] for c in insp.get_columns("survey_questions")}
