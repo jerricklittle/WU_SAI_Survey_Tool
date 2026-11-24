@@ -4,10 +4,10 @@ from nicegui import ui
 
 from study_links import (
     ensure_default_arms,
-    format_placeholder_lines,
+    normalize_placeholder_tag,
+    normalize_placeholder_tags,
     ordered_arms,
     ordered_parts,
-    parse_placeholder_lines,
     study_links_package,
 )
 from survey_models import (
@@ -129,6 +129,7 @@ def study_design_panel(survey_id: int) -> None:
                     'llm_count': int(part.llm_question_count or 3),
                     'llm_instructions': part.llm_instructions or '',
                     'context': part.context_text or '',
+                    'tags': normalize_placeholder_tags(part.placeholder_tags),
                     'arm_ids': arm_ids_by_part.get(part.id, set()),
                     'questions': part_questions.get(part.id, []),
                 }
@@ -142,7 +143,7 @@ def study_design_panel(survey_id: int) -> None:
                     'code': section.section_code,
                     'enrollment': section.enrollment,
                     'issued': issued.get(section.id, 0),
-                    'placeholders': format_placeholder_lines(section.placeholders),
+                    'placeholders': section.placeholders if isinstance(section.placeholders, dict) else {},
                 }
                 for section in sections
             ],
@@ -187,6 +188,39 @@ def study_design_panel(survey_id: int) -> None:
                     value=part['context'],
                     placeholder='Shown once, before this part starts. Leave blank to begin with the questions.',
                 ).classes('w-full').props('autogrow')
+                ui.label('Placeholder tags').classes('text-sm font-semibold text-gray-700 mt-3')
+                ui.label(
+                    'When the text says [Instructor], add a tag for it. '
+                    'Tag name is the label on each group. Tag is the word inside the brackets.'
+                ).classes('text-sm text-gray-600')
+                tag_fields: list = []
+                for tag in part['tags']:
+                    with ui.row().classes('w-full gap-2 items-end flex-wrap'):
+                        name_field = ui.input('Tag name', value=tag['name']).classes('w-56')
+                        token_field = ui.input('Tag', value=tag['tag']).classes('w-40')
+                        tag_fields.append((name_field, token_field))
+                        ui.button(
+                            'Remove',
+                            on_click=lambda part_id=part['id'], token=tag['tag']: _remove_part_tag(part_id, token),
+                        ).props('flat dense color=red')
+                with ui.row().classes('w-full gap-2 items-end flex-wrap'):
+                    new_tag_name = ui.input('Tag name', placeholder="Instructor's name").classes('w-56')
+                    new_tag = ui.input('Tag', placeholder='Instructor').classes('w-40')
+
+                    async def add_tag(
+                        part_id=part['id'],
+                        fields=tag_fields,
+                        name_field=new_tag_name,
+                        token_field=new_tag,
+                    ):
+                        pairs = [
+                            (await _live_text(name), await _live_text(token))
+                            for name, token in fields
+                        ]
+                        pairs.append((await _live_text(name_field), await _live_text(token_field)))
+                        _replace_part_tags(part_id, pairs)
+
+                    ui.button('Add tag', on_click=add_tag).classes('bg-slate-700 text-white')
                 kind_input = ui.select(
                     {'questions': 'Survey questions', 'llm': 'LLM follow-up', 'link': 'Link'},
                     value='llm' if part['llm'] else 'link' if part['link'] else 'questions',
@@ -294,11 +328,16 @@ def study_design_panel(survey_id: int) -> None:
                         kind_input=kind_input,
                         fields=llm_fields,
                         context_input=context_input,
+                        tag_fields=tag_fields,
                     ):
                         kind = kind_input.value or 'questions'
                         count = None if fields.get('count') is None else await _live_text(fields['count'])
                         instructions = '' if fields.get('instructions') is None else await _live_text(fields['instructions'])
                         link_url = await _live_text(fields['url']) if kind == 'link' and fields.get('url') is not None else None
+                        tag_pairs = [
+                            (await _live_text(name), await _live_text(token))
+                            for name, token in tag_fields
+                        ]
                         _save_part(
                             part_id,
                             await _live_text(title_input),
@@ -308,6 +347,7 @@ def study_design_panel(survey_id: int) -> None:
                             instructions,
                             link_url,
                             await _live_text(context_input),
+                            tag_pairs,
                         )
 
                     ui.button('Save part', on_click=save_this_part).props('flat dense no-caps').classes('text-blue-700')
@@ -394,35 +434,41 @@ def study_design_panel(survey_id: int) -> None:
             'Enter a group, a category, a code, and how many links to issue. '
             'Links are divided across the controls in blocks of three. Downloading again reuses links already created. '
             'Lowering the count does not revoke a link that was already issued. '
-            'The download is a zip file with one spreadsheet per group, and each spreadsheet has a tab for every control. '
-            'Survey text can include [Instructor], which is filled with the group name. '
-            'Add other lines as Name: value to fill [Name] on the respondent pages.'
+            'The download is a zip file with one spreadsheet per group, and each spreadsheet has a tab for every control.'
         ).classes('text-sm text-gray-600 mb-2')
+        survey_tags = _survey_placeholder_tags(snapshot['parts'])
         with ui.column().classes('w-full gap-2 mb-3'):
             with ui.row().classes('gap-2 items-end flex-wrap'):
                 instructor = ui.input('Group').classes('w-48')
                 course = ui.input('Category').classes('w-32')
                 section_code = ui.input('Code').classes('w-24')
                 enrollment = ui.number('Participants', value=0, min=0, precision=0).classes('w-28')
-            placeholders = ui.textarea(
-                'Placeholders',
-                placeholder='Room: Ford 201',
-            ).classes('w-full').props('autogrow')
+            new_values: list = []
+            if survey_tags:
+                ui.label('Placeholder values').classes('text-sm font-semibold text-gray-700')
+                for tag in survey_tags:
+                    value_field = ui.input(tag['name']).classes('w-full max-w-md')
+                    ui.label(f'Tag: {tag["tag"]}').classes('text-xs text-gray-500 -mt-2')
+                    new_values.append((tag['tag'], value_field))
 
             async def add_group(
                 group_field=instructor,
                 category_field=course,
                 code_field=section_code,
                 count_field=enrollment,
-                placeholder_field=placeholders,
+                value_fields=new_values,
             ) -> None:
+                values = {
+                    tag: await _live_text(field)
+                    for tag, field in value_fields
+                }
                 _add_section(
                     survey_id,
                     await _live_text(group_field),
                     await _live_text(category_field),
                     await _live_text(code_field),
                     await _live_text(count_field),
-                    await _live_text(placeholder_field),
+                    values,
                 )
 
             ui.button('Add group', on_click=add_group).classes('bg-blue-600 text-white w-fit')
@@ -439,16 +485,24 @@ def study_design_panel(survey_id: int) -> None:
                             'Remove',
                             on_click=lambda section_id=section['id']: _delete_section(section_id),
                         ).props('flat dense color=red')
-                    saved = ui.textarea(
-                        'Placeholders',
-                        value=section['placeholders'],
-                        placeholder='Instructor: Dr. Rivera',
-                    ).classes('w-full').props('autogrow')
+                    if survey_tags:
+                        stored = section['placeholders']
+                        value_fields = []
+                        for tag in survey_tags:
+                            value_field = ui.input(
+                                tag['name'],
+                                value=str(stored.get(tag['tag']) or stored.get(tag['tag'].lower()) or ''),
+                            ).classes('w-full max-w-md')
+                            ui.label(f'Tag: {tag["tag"]}').classes('text-xs text-gray-500 -mt-2')
+                            value_fields.append((tag['tag'], value_field))
 
-                    async def save_placeholders(section_id=section['id'], field=saved) -> None:
-                        _save_section_placeholders(section_id, await _live_text(field))
+                        async def save_values(section_id=section['id'], fields=value_fields) -> None:
+                            _save_section_placeholders(
+                                section_id,
+                                {tag: await _live_text(field) for tag, field in fields},
+                            )
 
-                    ui.button('Save placeholders', on_click=save_placeholders).props('flat dense').classes('w-fit')
+                        ui.button('Save placeholder values', on_click=save_values).props('flat dense').classes('w-fit')
         else:
             ui.label('No groups yet.').classes('text-sm text-gray-500')
 
@@ -762,6 +816,68 @@ def _move_control_part(arm_id: int, part_id: int, delta: int) -> None:
     _refresh()
 
 
+def _survey_placeholder_tags(parts: list[dict]) -> list[dict[str, str]]:
+    """One entry per tag, in the order the parts define them."""
+    tags: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for part in parts:
+        for tag in part.get('tags') or []:
+            key = str(tag.get('tag') or '').lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            tags.append(tag)
+    return tags
+
+
+def _tags_from_pairs(pairs: list[tuple[str, str]]) -> list[dict[str, str]] | None:
+    tags: list[dict[str, str]] = []
+    for name, token in pairs:
+        if not str(name or '').strip() and not str(token or '').strip():
+            continue
+        tag = normalize_placeholder_tag(name, token)
+        if tag is None:
+            return None
+        tags.append(tag)
+    return normalize_placeholder_tags(tags)
+
+
+def _replace_part_tags(part_id: int, pairs: list[tuple[str, str]]) -> None:
+    tags = _tags_from_pairs(pairs)
+    if tags is None:
+        ui.notify('Enter a tag name and a tag such as Instructor.', type='negative')
+        return
+    session = _session()
+    try:
+        part = session.get(SurveyPart, int(part_id))
+        if part is None:
+            ui.notify('Part not found', type='warning')
+            return
+        part.placeholder_tags = tags or None
+        session.commit()
+    finally:
+        session.close()
+    ui.notify('Placeholder tags saved', type='positive')
+    _refresh()
+
+
+def _remove_part_tag(part_id: int, token: str) -> None:
+    session = _session()
+    try:
+        part = session.get(SurveyPart, int(part_id))
+        if part is None:
+            return
+        key = str(token or '').strip().lower()
+        part.placeholder_tags = [
+            tag for tag in normalize_placeholder_tags(part.placeholder_tags)
+            if tag['tag'].lower() != key
+        ] or None
+        session.commit()
+    finally:
+        session.close()
+    _refresh()
+
+
 def _save_part(
     part_id: int,
     title: str,
@@ -771,6 +887,7 @@ def _save_part(
     llm_instructions: str = '',
     link_url: str | None = None,
     context_text: str = '',
+    tag_pairs: list[tuple[str, str]] | None = None,
 ) -> None:
     cleaned = (title or '').strip()
     if not cleaned:
@@ -785,6 +902,12 @@ def _save_part(
         part.title = cleaned
         part.submit_label = (submit_label or '').strip() or 'Submit'
         part.context_text = (context_text or '').strip() or None
+        if tag_pairs is not None:
+            tags = _tags_from_pairs(tag_pairs)
+            if tags is None:
+                ui.notify('Enter a tag name and a tag such as Instructor.', type='negative')
+                return
+            part.placeholder_tags = tags or None
         from study_links import normalize_link_url
         page = None
         if not llm_followups and link_url is not None:
@@ -849,7 +972,7 @@ def _add_section(
     course: str,
     section_code: str,
     enrollment,
-    placeholders_text: str = '',
+    placeholders: dict | None = None,
 ) -> None:
     instructor = (instructor or '').strip()
     course = (course or '').strip()
@@ -870,7 +993,7 @@ def _add_section(
                 course_code=course,
                 section_code=section_code,
                 enrollment=count,
-                placeholders=parse_placeholder_lines(placeholders_text) or None,
+                placeholders=_placeholder_value_map(placeholders),
             )
         )
         session.commit()
@@ -880,18 +1003,28 @@ def _add_section(
     _refresh()
 
 
-def _save_section_placeholders(section_id: int, placeholders_text: str) -> None:
+def _placeholder_value_map(values: dict | None) -> dict[str, str] | None:
+    cleaned: dict[str, str] = {}
+    for tag, value in (values or {}).items():
+        token = str(tag or '').strip().strip('[]')
+        text = str(value or '').strip()
+        if token and text:
+            cleaned[token] = text
+    return cleaned or None
+
+
+def _save_section_placeholders(section_id: int, values: dict) -> None:
     session = _session()
     try:
         section = session.get(CourseSection, int(section_id))
         if section is None:
             ui.notify('Group not found', type='warning')
             return
-        section.placeholders = parse_placeholder_lines(placeholders_text) or None
+        section.placeholders = _placeholder_value_map(values)
         session.commit()
     finally:
         session.close()
-    ui.notify('Placeholders saved', type='positive')
+    ui.notify('Placeholder values saved', type='positive')
     _refresh()
 
 

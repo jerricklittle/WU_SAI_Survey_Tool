@@ -386,6 +386,7 @@ def clone_study_structure(session, src_survey_id: int, dest_survey_id: int) -> d
             is_link=bool(part.is_link),
             one_per_page=bool(part.one_per_page),
             sort_order=part.sort_order,
+            placeholder_tags=normalize_placeholder_tags(part.placeholder_tags) or None,
         )
         session.add(copied)
         session.flush()
@@ -415,54 +416,39 @@ def clone_study_structure(session, src_survey_id: int, dest_survey_id: int) -> d
 _PLACEHOLDER = re.compile(r"\[([A-Za-z][A-Za-z0-9_]*)\]")
 
 
-def parse_placeholder_lines(text: str) -> dict[str, str]:
-    """Read 'Name: value' lines into the values that replace [Name]."""
-    parsed: dict[str, str] = {}
-    for line in str(text or "").splitlines():
-        if ":" not in line:
+def normalize_placeholder_tag(name: str, tag: str) -> dict[str, str] | None:
+    """A tag is a label plus the token used in survey text, such as [Instructor]."""
+    label = str(name or "").strip()
+    token = str(tag or "").strip().strip("[]")
+    if not label or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", token):
+        return None
+    return {"name": label, "tag": token}
+
+
+def normalize_placeholder_tags(raw) -> list[dict[str, str]]:
+    items = raw if isinstance(raw, list) else []
+    tags: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
             continue
-        name, value = line.split(":", 1)
-        name = name.strip().strip("[]")
-        value = value.strip()
-        if name and value:
-            parsed[name] = value
-    return parsed
+        tag = normalize_placeholder_tag(item.get("name"), item.get("tag"))
+        if tag is None or tag["tag"].lower() in seen:
+            continue
+        seen.add(tag["tag"].lower())
+        tags.append(tag)
+    return tags
 
 
-def format_placeholder_lines(values) -> str:
-    if not isinstance(values, dict):
-        return ""
-    return "\n".join(f"{name}: {value}" for name, value in values.items() if str(name).strip() and str(value).strip())
-
-
-def placeholder_values(section: CourseSection, semester: str) -> dict[str, str]:
-    """Values for [Name] tokens. [Instructor] and [Group] are the group name unless the group sets them."""
-    group = (section.instructor_name or "").strip()
-    category = (section.course_code or "").strip()
-    code = (section.section_code or "").strip()
-    period = (semester or "").strip()
+def placeholder_values(section: CourseSection) -> dict[str, str]:
+    """Group values for tags defined on the survey parts."""
+    stored = section.placeholders if isinstance(section.placeholders, dict) else {}
     values: dict[str, str] = {}
-
-    def put(name: str, value: str) -> None:
-        if value:
-            values[name.lower()] = value
-
-    put("group", group)
-    put("instructor", group)
-    put("instructorname", group)
-    put("category", category)
-    put("code", code)
-    put("period", period)
-    custom = section.placeholders if isinstance(section.placeholders, dict) else {}
-    custom_keys: set[str] = set()
-    for name, value in custom.items():
-        key = str(name).strip().strip("[]")
-        put(key, str(value).strip())
-        custom_keys.add(key.lower())
-    if "instructor" in custom_keys and "instructorname" not in custom_keys:
-        values["instructorname"] = values["instructor"]
-    elif "instructorname" in custom_keys and "instructor" not in custom_keys:
-        values["instructor"] = values["instructorname"]
+    for name, value in stored.items():
+        token = str(name or "").strip().strip("[]")
+        text = str(value or "").strip()
+        if token and text:
+            values[token.lower()] = text
     return values
 
 
@@ -576,7 +562,7 @@ def personalize_survey(payload: dict[str, Any], arm: SurveyArm, section: CourseS
         "group": section.instructor_name,
         "category": section.course_code,
         "code": section.section_code,
-        "fill": placeholder_values(section, semester),
+        "fill": placeholder_values(section),
     }
     apply_survey_placeholders(data, data["study"]["fill"])
     return data

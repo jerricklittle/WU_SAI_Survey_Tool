@@ -188,6 +188,7 @@ def load_survey_from_db(session: Session, survey_id: int) -> dict[str, Any] | No
                 "armKeys": keys_by_part.get(part.id, []),
                 "armOrder": order_by_part.get(part.id, {}),
                 "armPaging": paging_by_part.get(part.id, {}),
+                "placeholderTags": part.placeholder_tags or [],
             }
             for part in parts
         ],

@@ -95,6 +95,8 @@ def _ensure_study_schema() -> None:
             statements.append('ALTER TABLE survey_parts ADD COLUMN llm_instructions TEXT')
         if 'context_text' not in cols:
             statements.append('ALTER TABLE survey_parts ADD COLUMN context_text TEXT')
+        if 'placeholder_tags' not in cols:
+            statements.append('ALTER TABLE survey_parts ADD COLUMN placeholder_tags JSONB')
         if 'link_url' not in cols:
             statements.append('ALTER TABLE survey_parts ADD COLUMN link_url TEXT')
         if 'is_link' not in cols:
@@ -713,7 +715,7 @@ def _open_import_survey_dialog() -> None:
 
 def import_survey_json_dict(data: dict) -> int:
     """Import a survey JSON dict as a new survey; return new internal survey id."""
-    from study_links import normalize_link_url, normalize_llm_question_count
+    from study_links import normalize_link_url, normalize_llm_question_count, normalize_placeholder_tags
     title = (data.get('title') or data.get('name') or 'Imported Survey').strip()
     description = (data.get('description') or '').strip()
     settings = data.get('settings') or {}
@@ -793,6 +795,7 @@ def import_survey_json_dict(data: dict) -> int:
                 is_link=bool(part.get('isLink')) and not bool(part.get('llmFollowups')),
                 one_per_page=bool(part.get('onePerPage', True)),
                 sort_order=index,
+                placeholder_tags=normalize_placeholder_tags(part.get('placeholderTags')) or None,
             )
             session.add(copied)
             session.flush()

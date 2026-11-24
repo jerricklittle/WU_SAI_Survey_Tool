@@ -171,6 +171,8 @@ class SurveyPart(Base):
     is_link = Column(Boolean, nullable=False, default=False)
     one_per_page = Column(Boolean, nullable=False, default=True)
     sort_order = Column(Integer, nullable=False, default=1)
+    # Tags this part uses, each {name, tag}. [Tag] is filled from the group's value for that tag.
+    placeholder_tags = Column(JSONB, nullable=True)
 
     survey = relationship("Survey")
 
@@ -198,7 +200,7 @@ class CourseSection(Base):
     course_code = Column(String(64), nullable=False)
     section_code = Column(String(64), nullable=False)
     enrollment = Column(Integer, nullable=False, default=0)
-    # Extra [Name] values for this group. [Instructor] and [Group] use the group name unless set here.
+    # Values for placeholder tags defined on the survey parts. Keyed by tag.
     placeholders = Column(JSONB, nullable=True)
 
     survey = relationship("Survey")

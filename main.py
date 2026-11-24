@@ -114,6 +114,12 @@ def _ensure_study_columns() -> None:
                 conn.execute(text("ALTER TABLE survey_parts ADD COLUMN llm_instructions TEXT"))
         except (OperationalError, ProgrammingError):
             pass
+    if "placeholder_tags" not in part_cols:
+        try:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE survey_parts ADD COLUMN placeholder_tags JSONB"))
+        except (OperationalError, ProgrammingError):
+            pass
     if "context_text" not in part_cols:
         try:
             with engine.begin() as conn:
