@@ -180,6 +180,7 @@ def load_survey_from_db(session: Session, survey_id: int) -> dict[str, Any] | No
                 "llmFollowups": bool(part.llm_followups),
                 "llmQuestionCount": int(part.llm_question_count or 3),
                 "llmInstructions": part.llm_instructions or "",
+                "contextText": part.context_text or "",
                 "linkUrl": part.link_url or "",
                 "isLink": bool(part.is_link) and not part.llm_followups,
                 "questionIds": ids_by_part.get(part.id, []),

@@ -89,6 +89,8 @@ def _ensure_study_schema() -> None:
             )
         if 'llm_instructions' not in cols:
             statements.append('ALTER TABLE survey_parts ADD COLUMN llm_instructions TEXT')
+        if 'context_text' not in cols:
+            statements.append('ALTER TABLE survey_parts ADD COLUMN context_text TEXT')
         if 'link_url' not in cols:
             statements.append('ALTER TABLE survey_parts ADD COLUMN link_url TEXT')
         if 'is_link' not in cols:
@@ -757,6 +759,7 @@ def import_survey_json_dict(data: dict) -> int:
                 llm_followups=bool(part.get('llmFollowups')),
                 llm_question_count=normalize_llm_question_count(part.get('llmQuestionCount')),
                 llm_instructions=(str(part.get('llmInstructions') or '').strip() or None),
+                context_text=(str(part.get('contextText') or '').strip() or None),
                 link_url=normalize_link_url(part.get('linkUrl')) or None,
                 is_link=bool(part.get('isLink')) and not bool(part.get('llmFollowups')),
                 one_per_page=bool(part.get('onePerPage', True)),

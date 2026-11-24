@@ -165,6 +165,8 @@ class SurveyPart(Base):
     llm_followups = Column(Boolean, nullable=False, default=False)
     llm_question_count = Column(Integer, nullable=False, default=3)
     llm_instructions = Column(Text, nullable=True)
+    # Shown once, before this part starts.
+    context_text = Column(Text, nullable=True)
     link_url = Column(Text, nullable=True)
     is_link = Column(Boolean, nullable=False, default=False)
     one_per_page = Column(Boolean, nullable=False, default=True)

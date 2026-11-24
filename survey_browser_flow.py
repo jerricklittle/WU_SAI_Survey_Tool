@@ -310,7 +310,7 @@ def _queue_submit(s: dict[str, Any]) -> None:
         ui.timer(0.05, _run, once=True)
 
 
-def _activate_part(s: dict[str, Any], index: int) -> None:
+def _activate_part(s: dict[str, Any], index: int, *, introduce: bool = False) -> None:
     parts = s.get("parts") or []
     if not parts:
         return
@@ -334,9 +334,12 @@ def _activate_part(s: dict[str, Any], index: int) -> None:
     s["llm_started"] = False
     s["llm_question_count"] = normalize_llm_question_count(part.get("llmQuestionCount"))
     s["llm_instructions"] = str(part.get("llmInstructions") or "")
+    s["part_context"] = str(part.get("contextText") or "").strip()
     previous = parts[index - 1] if index else None
     s["llm_source_ids"] = [str(qid) for qid in (previous.get("questionIds") or [])] if previous else []
-    s["survey_state"] = {"mode": "static", "static_count": len(chosen)}
+    # Context, and the screen after an LLM part, wait for Start before the questions begin.
+    mode = "part_intro" if s["part_context"] or introduce else "static"
+    s["survey_state"] = {"mode": mode, "static_count": len(chosen)}
 
 
 def _queue_part_submit(s: dict[str, Any]) -> None:
@@ -385,11 +388,7 @@ def _commit_current_part(s: dict[str, Any]) -> None:
 
     s.setdefault("archived_dynamic", []).extend(list(s.get("dynamic_questions") or []))
     s["dynamic_questions"] = []
-    if s.get("llm_part") and not is_final:
-        s["pending_part_index"] = index + 1
-        s["survey_state"]["mode"] = "part_intro"
-        survey_page.refresh()
-        return
+    leaving_llm = bool(s.get("llm_part"))
     if is_final:
         dialog.close()
         clear_survey_session()
@@ -401,8 +400,7 @@ def _commit_current_part(s: dict[str, Any]) -> None:
             pass
         return
 
-    _activate_part(s, index + 1)
-    s["survey_state"]["mode"] = "static"
+    _activate_part(s, index + 1, introduce=leaving_llm)
     survey_page.refresh()
 
 
@@ -644,9 +642,8 @@ def _render_all_questions(s: dict[str, Any], survey: dict[str, Any], refresh_fn)
         ).classes("bg-green-600 text-white hover:bg-green-700 mb-6")
 
 
-def _begin_pending_part(s: dict[str, Any], refresh_fn) -> None:
-    index = int(s.pop("pending_part_index", 0) or 0)
-    _activate_part(s, index)
+def _begin_part(s: dict[str, Any], refresh_fn) -> None:
+    s["survey_state"]["mode"] = "static"
     refresh_fn()
 
 
@@ -695,27 +692,33 @@ def survey_page(dialog, session_factory):
 
     if mode == "part_intro":
         parts = s.get("parts") or []
-        next_index = int(s.get("pending_part_index") or 0)
-        next_part = parts[next_index] if 0 <= next_index < len(parts) else {}
-        title = str(next_part.get("title") or "Next section").strip() or "Next section"
+        part_index = int(s.get("part_index") or 0)
+        part = parts[part_index] if 0 <= part_index < len(parts) else {}
+        title = str(part.get("title") or "Next section").strip() or "Next section"
+        context = str(s.get("part_context") or "").strip()
         with ui.column().classes(
-            "w-full min-h-0 max-h-full flex-1 bg-gray-100 flex flex-col items-center justify-center gap-4 py-6"
+            "w-full min-h-0 max-h-full flex-1 overflow-y-auto bg-gray-100 flex flex-col items-center justify-center gap-4 py-6"
         ):
             with ui.card().classes(
                 "w-full max-w-xl bg-white shadow-lg border border-gray-200 rounded-lg px-8 py-12 text-center"
             ):
                 _show_group_heading(s.get("study"))
-                ui.label("The next section is ready.").classes(
-                    "text-lg text-gray-600 mb-2"
-                )
                 ui.label(title).classes("text-3xl font-bold text-gray-800 mb-2")
                 if parts:
-                    ui.label(f"Part {next_index + 1} of {len(parts)}").classes(
-                        "text-sm text-gray-500 mb-6"
+                    ui.label(f"Part {part_index + 1} of {len(parts)}").classes(
+                        "text-sm text-gray-500 mb-4"
+                    )
+                if context:
+                    ui.label(context).classes(
+                        "whitespace-pre-wrap text-left text-gray-700 mb-6"
+                    )
+                else:
+                    ui.label("The next section is ready.").classes(
+                        "text-lg text-gray-600 mb-6"
                     )
                 ui.button(
                     "Start",
-                    on_click=lambda: _begin_pending_part(s, refresh),
+                    on_click=lambda: _begin_part(s, refresh),
                 ).classes("bg-blue-600 text-white text-lg px-8 py-3 rounded-lg hover:bg-blue-700")
         return
 

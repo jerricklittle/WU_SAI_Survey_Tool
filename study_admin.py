@@ -111,6 +111,7 @@ def study_design_panel(survey_id: int) -> None:
                     'link_url': part.link_url or '',
                     'llm_count': int(part.llm_question_count or 3),
                     'llm_instructions': part.llm_instructions or '',
+                    'context': part.context_text or '',
                     'arm_ids': arm_ids_by_part.get(part.id, set()),
                     'questions': part_questions.get(part.id, []),
                 }
@@ -142,7 +143,8 @@ def study_design_panel(survey_id: int) -> None:
         ui.label(
             'Create the parts first. A part is its own questions, an LLM follow-up, or a link to another page. '
             'An LLM part writes questions from the open-ended answers in the part placed just before it. '
-            'A link part sends the respondent to that page. When they come back, they continue with the parts that remain.'
+            'A link part sends the respondent to that page. When they come back, they continue with the parts that remain. '
+            'Context is shown once, before that part starts.'
         ).classes('text-sm text-gray-600 mb-2')
         with ui.row().classes('gap-2 items-end flex-wrap mb-3'):
             part_title = ui.input('New part title', placeholder='Standard survey').classes('w-64')
@@ -162,6 +164,11 @@ def study_design_panel(survey_id: int) -> None:
                 ui.label(kind_name).classes('text-xs font-semibold text-slate-500')
                 title_input = ui.input('Title', value=part['title']).classes('w-full')
                 submit_input = ui.input('Submit button', value=part['submit']).classes('w-full max-w-xs')
+                context_input = ui.textarea(
+                    'Context shown before this part',
+                    value=part['context'],
+                    placeholder='Shown once, before this part starts. Leave blank to begin with the questions.',
+                ).classes('w-full').props('autogrow')
                 kind_input = ui.select(
                     {'questions': 'Survey questions', 'llm': 'LLM follow-up', 'link': 'Link'},
                     value='llm' if part['llm'] else 'link' if part['link'] else 'questions',
@@ -264,7 +271,7 @@ def study_design_panel(survey_id: int) -> None:
                 with ui.row().classes('gap-2 mt-2 flex-wrap'):
                     ui.button(
                         'Save part',
-                        on_click=lambda part_id=part['id'], title_input=title_input, submit_input=submit_input, kind_input=kind_input, fields=llm_fields: _save_part(
+                        on_click=lambda part_id=part['id'], title_input=title_input, submit_input=submit_input, kind_input=kind_input, fields=llm_fields, context_input=context_input: _save_part(
                             part_id,
                             title_input.value,
                             submit_input.value,
@@ -272,6 +279,7 @@ def study_design_panel(survey_id: int) -> None:
                             None if fields.get('count') is None else fields['count'].value,
                             '' if fields.get('instructions') is None else fields['instructions'].value,
                             fields['url'].value if (kind_input.value or 'questions') == 'link' else None,
+                            context_input.value,
                         ),
                     ).props('flat dense no-caps').classes('text-blue-700')
                     ui.button('Delete', on_click=lambda part_id=part['id']: _delete_part(part_id)).props('flat dense color=red')
@@ -703,6 +711,7 @@ def _save_part(
     llm_question_count=3,
     llm_instructions: str = '',
     link_url: str | None = None,
+    context_text: str = '',
 ) -> None:
     cleaned = (title or '').strip()
     if not cleaned:
@@ -716,6 +725,7 @@ def _save_part(
             return
         part.title = cleaned
         part.submit_label = (submit_label or '').strip() or 'Submit'
+        part.context_text = (context_text or '').strip() or None
         from study_links import normalize_link_url
         page = None
         if not llm_followups and link_url is not None:
